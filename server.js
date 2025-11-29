@@ -94,6 +94,82 @@ app.post('/api/wishlist', async (req, res) => {
   }
 });
 
+// Get wishlist endpoint (for loading wishlist)
+app.get('/api/wishlist/get', async (req, res) => {
+  try {
+    // Simple authentication check
+    const authHeader = req.headers['x-api-key'];
+    if (authHeader !== API_SECRET) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const customerId = req.query.customer_id;
+    if (!customerId) {
+      return res.status(400).json({ error: 'Missing customer_id' });
+    }
+
+    // Query Shopify Admin API to get customer metafield
+    const query = `
+      query getCustomerMetafield($id: ID!) {
+        customer(id: $id) {
+          id
+          metafields(first: 1, namespace: "custom", keys: ["wishlist"]) {
+            edges {
+              node {
+                id
+                key
+                value
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    const response = await fetch(`https://${SHOPIFY_SHOP}/admin/api/2024-01/graphql.json`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
+      },
+      body: JSON.stringify({
+        query: query,
+        variables: { id: `gid://shopify/Customer/${customerId}` }
+      })
+    });
+
+    const data = await response.json();
+
+    if (data.errors) {
+      console.error('GraphQL errors:', data.errors);
+      return res.status(500).json({ 
+        error: 'Failed to fetch wishlist',
+        details: data.errors
+      });
+    }
+
+    const metafield = data.data?.customer?.metafields?.edges?.[0]?.node;
+    if (metafield && metafield.value) {
+      try {
+        const wishlist = JSON.parse(metafield.value);
+        res.json({ 
+          success: true, 
+          wishlist: Array.isArray(wishlist) ? wishlist : []
+        });
+      } catch (e) {
+        console.error('Error parsing metafield value:', e);
+        res.json({ success: true, wishlist: [] });
+      }
+    } else {
+      res.json({ success: true, wishlist: [] });
+    }
+
+  } catch (error) {
+    console.error('Error fetching wishlist:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
