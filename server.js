@@ -2,13 +2,7 @@ const express = require('express');
 const fetch = require('node-fetch');
 const app = express();
 
-app.use(express.json());
-
-const SHOPIFY_SHOP = process.env.SHOPIFY_SHOP;
-const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
-const API_SECRET = process.env.API_SECRET;
-
-// Enable CORS for Shopify store
+// Enable CORS for Shopify store - MUST BE BEFORE OTHER MIDDLEWARE
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*'); // Allow all origins
   res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -21,6 +15,13 @@ app.use((req, res, next) => {
   
   next();
 });
+
+app.use(express.json());
+
+// Your Shopify credentials (from environment variables)
+const SHOPIFY_SHOP = process.env.SHOPIFY_SHOP;
+const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
+const API_SECRET = process.env.API_SECRET;
 
 // Wishlist save endpoint
 app.post('/api/wishlist', async (req, res) => {
@@ -96,6 +97,18 @@ app.post('/api/wishlist', async (req, res) => {
 // Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
+});
+
+// Root endpoint (for testing)
+app.get('/', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    message: 'Wishlist API Server',
+    endpoints: {
+      health: '/health',
+      wishlist: '/api/wishlist (POST)'
+    }
+  });
 });
 
 const PORT = process.env.PORT || 3000;
