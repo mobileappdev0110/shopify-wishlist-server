@@ -4,12 +4,9 @@ const app = express();
 
 app.use(express.json());
 
-// Your Shopify credentials (from API credentials tab)
-const SHOPIFY_SHOP = 'YOUR-STORE.myshopify.com'; // e.g., tech-corner-9576.myshopify.com
-const SHOPIFY_ACCESS_TOKEN = 'YOUR_ACCESS_TOKEN'; // Copy from API credentials tab
-
-// Simple authentication (add your own secret key)
-const API_SECRET = 'your-secret-key-here'; // Change this to something secure
+const SHOPIFY_SHOP = process.env.SHOPIFY_SHOP;
+const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
+const API_SECRET = process.env.API_SECRET;
 
 // Wishlist save endpoint
 app.post('/api/wishlist', async (req, res) => {
