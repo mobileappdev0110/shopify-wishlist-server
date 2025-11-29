@@ -142,10 +142,18 @@ app.get('/api/wishlist/get', async (req, res) => {
 
     if (data.errors) {
       console.error('GraphQL errors:', data.errors);
-      return res.status(500).json({ 
-        error: 'Failed to fetch wishlist',
-        details: data.errors
+      // Don't return 500 - return empty wishlist instead
+      return res.json({ 
+        success: true,
+        wishlist: [],
+        warning: 'Could not fetch from metafield'
       });
+    }
+
+    // Check if customer exists
+    if (!data.data?.customer) {
+      console.warn('Customer not found:', customerId);
+      return res.json({ success: true, wishlist: [] });
     }
 
     const metafield = data.data?.customer?.metafields?.edges?.[0]?.node;
@@ -161,12 +169,18 @@ app.get('/api/wishlist/get', async (req, res) => {
         res.json({ success: true, wishlist: [] });
       }
     } else {
+      // Metafield doesn't exist yet - return empty array (not an error)
       res.json({ success: true, wishlist: [] });
     }
 
   } catch (error) {
     console.error('Error fetching wishlist:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    // Return empty wishlist instead of 500 error
+    res.json({ 
+      success: true, 
+      wishlist: [],
+      error: 'Server error (using empty wishlist)'
+    });
   }
 });
 
