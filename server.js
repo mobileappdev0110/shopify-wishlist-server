@@ -100,20 +100,32 @@ let db = null;
 // Initialize MongoDB connection
 async function initMongoDB() {
   try {
+    if (!MONGODB_URI) {
+      console.error('❌ MONGODB_URI environment variable not set!');
+      return false;
+    }
+    
+    console.log('🔄 Attempting to connect to MongoDB...');
     mongoClient = new MongoClient(MONGODB_URI);
     await mongoClient.connect();
     db = mongoClient.db(MONGODB_DB_NAME);
     console.log('✅ Connected to MongoDB');
     
-    // Create indexes for better performance
-    await db.collection('submissions').createIndex({ id: 1 }, { unique: true });
-    await db.collection('submissions').createIndex({ status: 1 });
-    await db.collection('submissions').createIndex({ createdAt: -1 });
+    // Create indexes for better performance (ignore errors if they already exist)
+    try {
+      await db.collection('submissions').createIndex({ id: 1 }, { unique: true });
+      await db.collection('submissions').createIndex({ status: 1 });
+      await db.collection('submissions').createIndex({ createdAt: -1 });
+    } catch (indexError) {
+      // Indexes might already exist, that's okay
+      console.log('Index creation skipped (may already exist)');
+    }
     
     return true;
   } catch (error) {
-    console.error('❌ MongoDB connection error:', error);
-    console.warn('⚠️ Falling back to file storage');
+    console.error('❌ MongoDB connection error:', error.message);
+    console.error('Full error:', error);
+    console.warn('⚠️ MongoDB connection failed - data may not persist');
     return false;
   }
 }
@@ -125,6 +137,9 @@ let useMongoDB = false;
 
 // Load submissions from MongoDB or file
 async function loadSubmissions() {
+  // Ensure MongoDB connection first
+  await ensureMongoConnection();
+  
   if (db) {
     try {
       const submissions = await db.collection('submissions').find({}).sort({ id: 1 }).toArray();
@@ -138,7 +153,14 @@ async function loadSubmissions() {
     }
   }
   
-  // Fallback to file
+  // Fallback to file (skip on Vercel)
+  if (process.env.VERCEL) {
+    console.log('No MongoDB connection, starting fresh (Vercel - no file storage)');
+    tradeInSubmissions = [];
+    submissionIdCounter = 1;
+    return;
+  }
+  
   try {
     const filePath = path.join(__dirname, 'trade-in-submissions.json');
     const data = await fs.readFile(filePath, 'utf8');
@@ -153,8 +175,26 @@ async function loadSubmissions() {
   }
 }
 
+// Ensure MongoDB connection (for serverless functions)
+async function ensureMongoConnection() {
+  if (db) {
+    return true;
+  }
+  
+  try {
+    await initMongoDB();
+    return db !== null;
+  } catch (error) {
+    console.error('Failed to connect to MongoDB:', error);
+    return false;
+  }
+}
+
 // Save submissions to MongoDB or file
 async function saveSubmissions() {
+  // Ensure MongoDB connection
+  await ensureMongoConnection();
+  
   if (db) {
     try {
       // Save all submissions to MongoDB
@@ -172,7 +212,12 @@ async function saveSubmissions() {
     }
   }
   
-  // Fallback to file
+  // Fallback to file (skip on Vercel - read-only filesystem)
+  if (process.env.VERCEL) {
+    console.warn('⚠️ Vercel detected: Skipping file save (read-only filesystem). MongoDB required.');
+    return;
+  }
+  
   try {
     const filePath = path.join(__dirname, 'trade-in-submissions.json');
     await fs.writeFile(
@@ -613,7 +658,9 @@ app.post('/api/trade-in/submit', async (req, res) => {
 
     tradeInSubmissions.push(submission);
     
-    // Save to MongoDB if available
+    // Ensure MongoDB connection and save
+    await ensureMongoConnection();
+    
     if (db) {
       try {
         await db.collection('submissions').replaceOne(
@@ -624,10 +671,13 @@ app.post('/api/trade-in/submit', async (req, res) => {
         console.log(`✅ Saved submission #${submission.id} to MongoDB`);
       } catch (error) {
         console.error('Error saving to MongoDB:', error);
+        // Still try saveSubmissions for consistency
       }
+    } else {
+      console.error('❌ MongoDB not connected - submission may be lost!');
     }
     
-    // Also save to file as fallback
+    // Also call saveSubmissions for consistency (will skip file on Vercel)
     await saveSubmissions();
 
     // Send confirmation email to customer
@@ -694,6 +744,9 @@ app.get('/api/trade-in/list', async (req, res) => {
     if (authHeader !== API_SECRET) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
+
+    // Ensure MongoDB connection
+    await ensureMongoConnection();
 
     const { status, limit = 100, offset = 0 } = req.query;
 
