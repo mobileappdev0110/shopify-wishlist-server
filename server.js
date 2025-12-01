@@ -292,8 +292,12 @@ app.post('/api/pricing/calculate', async (req, res) => {
   try {
     const { brand, model, storage, condition } = req.body;
 
+    // Log the request for debugging
+    console.log('Pricing calculation request:', { brand, model, storage, condition });
+
     if (!brand || !model || !storage || !condition) {
       return res.status(400).json({ 
+        success: false,
         error: 'Missing required fields: brand, model, storage, condition' 
       });
     }
@@ -301,8 +305,12 @@ app.post('/api/pricing/calculate', async (req, res) => {
     // Get base price
     const basePrice = pricingRules[brand]?.[model]?.[storage]?.base;
     if (!basePrice) {
+      console.log('Pricing not found. Available brands:', Object.keys(pricingRules));
+      console.log('Requested:', { brand, model, storage });
       return res.status(404).json({ 
+        success: false,
         error: 'Pricing not found for this device configuration',
+        requested: { brand, model, storage },
         availableBrands: Object.keys(pricingRules)
       });
     }
@@ -311,7 +319,9 @@ app.post('/api/pricing/calculate', async (req, res) => {
     const multiplier = conditionMultipliers[condition];
     if (!multiplier) {
       return res.status(400).json({ 
+        success: false,
         error: 'Invalid condition',
+        requestedCondition: condition,
         availableConditions: Object.keys(conditionMultipliers)
       });
     }
@@ -330,7 +340,11 @@ app.post('/api/pricing/calculate', async (req, res) => {
 
   } catch (error) {
     console.error('Error calculating price:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ 
+      success: false,
+      error: 'Internal server error',
+      message: error.message 
+    });
   }
 });
 
