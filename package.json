@@ -1,12 +1,18 @@
 {
-  "name": "wishlist-sync",
+  "name": "shopify-trade-in-server",
   "version": "1.0.0",
+  "description": "Server for Shopify Trade-In and Wishlist functionality",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
     "express": "^4.18.2",
-    "node-fetch": "^2.6.7"
+    "node-fetch": "^2.7.0",
+    "nodemailer": "^6.9.7"
+  },
+  "engines": {
+    "node": ">=14.0.0"
   }
 }
+
