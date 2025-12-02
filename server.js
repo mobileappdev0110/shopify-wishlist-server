@@ -1202,9 +1202,29 @@ app.post('/api/trade-in/:id/issue-credit', async (req, res) => {
       console.warn('Could not find customer by email, creating code-based gift card:', error);
     }
 
-    // Create gift card via Shopify Admin API
-    // Shopify GraphQL API requires 'input' argument, not 'giftCard'
-    const giftCardCode = `TRADE${submission.id.toString().padStart(6, '0')}`;
+    // Generate secure, random gift card code (not predictable)
+    // Format: TRADE-XXXX-XXXX (e.g., TRADE-A3K9-M7P2)
+    // This prevents guessing sequential codes
+    function generateSecureGiftCardCode() {
+      const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // Removed confusing chars (0, O, I, 1)
+      let code = 'TRADE-';
+      
+      // Generate 4 random characters
+      for (let i = 0; i < 4; i++) {
+        code += chars.charAt(Math.floor(Math.random() * chars.length));
+      }
+      
+      code += '-';
+      
+      // Generate another 4 random characters
+      for (let i = 0; i < 4; i++) {
+        code += chars.charAt(Math.floor(Math.random() * chars.length));
+      }
+      
+      return code;
+    }
+    
+    const giftCardCode = generateSecureGiftCardCode();
     
     // Convert price to string with 2 decimal places for MoneyV2 format
     const amount = parseFloat(submission.finalPrice).toFixed(2);
