@@ -1209,10 +1209,16 @@ app.post('/api/trade-in/:id/issue-credit', async (req, res) => {
     // If customer exists, they can still use the code and it will be linked when used
     const giftCardCode = `TRADE${submission.id.toString().padStart(6, '0')}`;
     
+    // Convert price to string with 2 decimal places for MoneyV2 format
+    const amount = parseFloat(submission.finalPrice).toFixed(2);
+    
     const mutation = `
       mutation {
         giftCardCreate(giftCard: {
-          initialValue: ${submission.finalPrice}
+          initialValue: {
+            amount: "${amount}"
+            currencyCode: GBP
+          }
           code: "${giftCardCode}"
         }) {
           giftCard {
@@ -1230,6 +1236,9 @@ app.post('/api/trade-in/:id/issue-credit', async (req, res) => {
         }
       }
     `;
+    
+    console.log('Creating gift card with mutation:', mutation);
+    console.log('Gift card details:', { code: giftCardCode, amount: amount, submissionId: submission.id });
 
     const response = await fetch(`https://${SHOPIFY_SHOP}/admin/api/2024-01/graphql.json`, {
       method: 'POST',
@@ -1240,7 +1249,14 @@ app.post('/api/trade-in/:id/issue-credit', async (req, res) => {
       body: JSON.stringify({ query: mutation })
     });
 
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Shopify API response error:', response.status, errorText);
+      throw new Error(`Shopify API error: ${response.status} - ${errorText}`);
+    }
+
     const data = await response.json();
+    console.log('Shopify gift card creation response:', JSON.stringify(data, null, 2));
     
     // If customer was found, try to assign the gift card to them
     // This ensures it appears in their account
