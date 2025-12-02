@@ -248,9 +248,14 @@ async function loadPricingRules() {
   if (db) {
     try {
       const doc = await db.collection('pricing').findOne({ type: 'rules' });
-      if (doc && doc.rules) {
-        pricingRules = doc.rules;
-        console.log('✅ Pricing rules loaded from MongoDB');
+      if (doc) {
+        if (doc.rules) {
+          pricingRules = doc.rules;
+        }
+        if (doc.multipliers) {
+          conditionMultipliers = doc.multipliers;
+        }
+        console.log('✅ Pricing rules and multipliers loaded from MongoDB');
         return;
       }
     } catch (error) {
@@ -266,7 +271,13 @@ async function loadPricingRules() {
   
   try {
     const data = await fs.readFile(path.join(__dirname, 'pricing-rules.json'), 'utf8');
-    pricingRules = JSON.parse(data);
+    const parsed = JSON.parse(data);
+    if (parsed.rules) {
+      pricingRules = parsed.rules;
+    }
+    if (parsed.multipliers) {
+      conditionMultipliers = parsed.multipliers;
+    }
     console.log('📁 Pricing rules loaded from file');
   } catch (error) {
     console.log('No pricing rules file found, using defaults');
@@ -662,23 +673,39 @@ app.post('/api/pricing/rules', async (req, res) => {
 
     const { pricingRules: newRules, conditionMultipliers: newMultipliers } = req.body;
 
+    console.log('Received pricing update:', {
+      hasNewRules: !!newRules,
+      hasNewMultipliers: !!newMultipliers,
+      rulesCount: newRules ? Object.keys(newRules).length : 0
+    });
+
     if (newRules) {
       pricingRules = newRules;
+      console.log('Updated pricingRules:', Object.keys(pricingRules).length, 'brands');
     }
     if (newMultipliers) {
       Object.assign(conditionMultipliers, newMultipliers);
+      console.log('Updated conditionMultipliers:', Object.keys(conditionMultipliers).length, 'conditions');
     }
 
     await savePricingRules();
 
+    // Reload to verify save
+    await loadPricingRules();
+
     res.json({
       success: true,
-      message: 'Pricing rules updated successfully'
+      message: 'Pricing rules updated successfully',
+      pricingRules: pricingRules,
+      conditionMultipliers: conditionMultipliers
     });
 
   } catch (error) {
     console.error('Error updating pricing rules:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ 
+      error: 'Internal server error',
+      details: error.message 
+    });
   }
 });
 
