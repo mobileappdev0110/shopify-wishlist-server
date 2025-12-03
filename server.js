@@ -510,63 +510,275 @@ app.get('/api/wishlist/get', async (req, res) => {
 // TRADE-IN PRICING ENDPOINTS
 // ============================================
 
-// Calculate valuation
-app.post('/api/pricing/calculate', async (req, res) => {
+// Get trade-in products from Shopify (filtered by tag)
+app.get('/api/products/trade-in', async (req, res) => {
   try {
-    const { brand, model, storage, condition } = req.body;
+    const { deviceType } = req.query; // Optional: filter by device type
 
-    // Log the request for debugging
-    console.log('Pricing calculation request:', { brand, model, storage, condition });
-
-    if (!brand || !model || !storage || !condition) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Missing required fields: brand, model, storage, condition' 
-      });
-    }
-
-    // Get base price - try exact match first
-    let basePrice = pricingRules[brand]?.[model]?.[storage]?.base;
-    
-    // If not found, try case-insensitive match
-    if (!basePrice) {
-      const brandKeys = Object.keys(pricingRules);
-      const matchedBrand = brandKeys.find(b => b.toLowerCase() === brand.toLowerCase());
-      
-      if (matchedBrand) {
-        const modelKeys = Object.keys(pricingRules[matchedBrand] || {});
-        const matchedModel = modelKeys.find(m => m.toLowerCase() === model.toLowerCase());
-        
-        if (matchedModel) {
-          const storageKeys = Object.keys(pricingRules[matchedBrand][matchedModel] || {});
-          const matchedStorage = storageKeys.find(s => s.toLowerCase() === storage.toLowerCase());
-          
-          if (matchedStorage) {
-            basePrice = pricingRules[matchedBrand][matchedModel][matchedStorage]?.base;
-            console.log(`Matched with case-insensitive: ${matchedBrand} ${matchedModel} ${matchedStorage}`);
+    // GraphQL query to fetch products with "trade-in" tag
+    const query = `
+      query getTradeInProducts($first: Int!, $after: String) {
+        products(first: $first, after: $after, query: "tag:trade-in") {
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+          edges {
+            node {
+              id
+              title
+              handle
+              vendor
+              tags
+              variants(first: 50) {
+                edges {
+                  node {
+                    id
+                    title
+                    price
+                    availableForSale
+                    selectedOptions {
+                      name
+                      value
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
+    `;
+
+    let allProducts = [];
+    let hasNextPage = true;
+    let cursor = null;
+
+    // Paginate through all products
+    while (hasNextPage) {
+      const response = await fetch(`https://${SHOPIFY_SHOP}/admin/api/2024-01/graphql.json`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
+        },
+        body: JSON.stringify({
+          query: query,
+          variables: { first: 50, after: cursor }
+        })
+      });
+
+      const data = await response.json();
+
+      if (data.errors) {
+        console.error('GraphQL errors fetching products:', data.errors);
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to fetch products from Shopify',
+          details: data.errors
+        });
+      }
+
+      const products = data.data?.products?.edges || [];
+      allProducts = allProducts.concat(products.map(edge => ({
+        id: edge.node.id.replace('gid://shopify/Product/', ''),
+        gid: edge.node.id,
+        title: edge.node.title,
+        handle: edge.node.handle,
+        vendor: edge.node.vendor,
+        tags: edge.node.tags,
+        variants: edge.node.variants.edges.map(v => ({
+          id: v.node.id.replace('gid://shopify/ProductVariant/', ''),
+          gid: v.node.id,
+          title: v.node.title,
+          price: parseFloat(v.node.price),
+          availableForSale: v.node.availableForSale,
+          options: v.node.selectedOptions.reduce((acc, opt) => {
+            acc[opt.name.toLowerCase()] = opt.value;
+            return acc;
+          }, {})
+        }))
+      })));
+
+      hasNextPage = data.data?.products?.pageInfo?.hasNextPage || false;
+      cursor = data.data?.products?.pageInfo?.endCursor;
     }
-    
-    if (!basePrice) {
-      console.log('Pricing not found. Available brands:', Object.keys(pricingRules));
-      console.log('Requested:', { brand, model, storage });
+
+    // Filter by device type if specified (check tags or vendor)
+    let filteredProducts = allProducts;
+    if (deviceType) {
+      filteredProducts = allProducts.filter(product => {
+        const tags = product.tags.map(t => t.toLowerCase());
+        const deviceTypeLower = deviceType.toLowerCase();
+        return tags.includes(deviceTypeLower) || 
+               tags.includes(`trade-in-${deviceTypeLower}`) ||
+               product.vendor?.toLowerCase().includes(deviceTypeLower);
+      });
+    }
+
+    res.json({
+      success: true,
+      products: filteredProducts,
+      count: filteredProducts.length
+    });
+
+  } catch (error) {
+    console.error('Error fetching trade-in products:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
+});
+
+// Calculate valuation (supports both old and new systems)
+app.post('/api/pricing/calculate', async (req, res) => {
+  try {
+    const { 
+      // New system (variant-based)
+      productId, 
+      variantId, 
+      // Old system (backward compatibility)
+      brand, 
+      model, 
+      storage, 
+      // Common
+      condition 
+    } = req.body;
+
+    // Log the request for debugging
+    console.log('Pricing calculation request:', { productId, variantId, brand, model, storage, condition });
+
+    if (!condition) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Missing required field: condition' 
+      });
+    }
+
+    let basePrice = null;
+
+    // NEW SYSTEM: Use Shopify product variant
+    if (productId && variantId) {
+      try {
+        // Fetch variant price from Shopify
+        const variantQuery = `
+          query getVariant($id: ID!) {
+            productVariant(id: $id) {
+              id
+              price
+              product {
+                id
+                title
+              }
+            }
+          }
+        `;
+
+        const variantGid = variantId.startsWith('gid://') ? variantId : `gid://shopify/ProductVariant/${variantId}`;
+        
+        const response = await fetch(`https://${SHOPIFY_SHOP}/admin/api/2024-01/graphql.json`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
+          },
+          body: JSON.stringify({
+            query: variantQuery,
+            variables: { id: variantGid }
+          })
+        });
+
+        const data = await response.json();
+
+        if (data.errors) {
+          console.error('GraphQL errors fetching variant:', data.errors);
+          return res.status(404).json({
+            success: false,
+            error: 'Variant not found in Shopify',
+            details: data.errors
+          });
+        }
+
+        const variant = data.data?.productVariant;
+        if (!variant) {
+          return res.status(404).json({
+            success: false,
+            error: 'Variant not found'
+          });
+        }
+
+        basePrice = parseFloat(variant.price);
+        console.log(`✅ Found variant price from Shopify: £${basePrice} for ${variant.product.title}`);
+
+      } catch (error) {
+        console.error('Error fetching variant from Shopify:', error);
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to fetch variant price from Shopify',
+          message: error.message
+        });
+      }
+    }
+    // OLD SYSTEM: Use pricing rules (backward compatibility)
+    else if (brand && model && storage) {
+      // Get base price - try exact match first
+      basePrice = pricingRules[brand]?.[model]?.[storage]?.base;
       
-      // Show available models for the brand if brand exists
-      let availableModels = [];
-      const brandKeys = Object.keys(pricingRules);
-      const matchedBrand = brandKeys.find(b => b.toLowerCase() === brand.toLowerCase());
-      if (matchedBrand) {
-        availableModels = Object.keys(pricingRules[matchedBrand] || {});
+      // If not found, try case-insensitive match
+      if (!basePrice) {
+        const brandKeys = Object.keys(pricingRules);
+        const matchedBrand = brandKeys.find(b => b.toLowerCase() === brand.toLowerCase());
+        
+        if (matchedBrand) {
+          const modelKeys = Object.keys(pricingRules[matchedBrand] || {});
+          const matchedModel = modelKeys.find(m => m.toLowerCase() === model.toLowerCase());
+          
+          if (matchedModel) {
+            const storageKeys = Object.keys(pricingRules[matchedBrand][matchedModel] || {});
+            const matchedStorage = storageKeys.find(s => s.toLowerCase() === storage.toLowerCase());
+            
+            if (matchedStorage) {
+              basePrice = pricingRules[matchedBrand][matchedModel][matchedStorage]?.base;
+              console.log(`Matched with case-insensitive: ${matchedBrand} ${matchedModel} ${matchedStorage}`);
+            }
+          }
+        }
       }
       
-      return res.status(404).json({ 
+      if (!basePrice) {
+        console.log('Pricing not found. Available brands:', Object.keys(pricingRules));
+        console.log('Requested:', { brand, model, storage });
+        
+        // Show available models for the brand if brand exists
+        let availableModels = [];
+        const brandKeys = Object.keys(pricingRules);
+        const matchedBrand = brandKeys.find(b => b.toLowerCase() === brand.toLowerCase());
+        if (matchedBrand) {
+          availableModels = Object.keys(pricingRules[matchedBrand] || {});
+        }
+        
+        return res.status(404).json({ 
+          success: false,
+          error: 'Pricing not found for this device configuration',
+          requested: { brand, model, storage },
+          availableBrands: Object.keys(pricingRules),
+          availableModels: availableModels.length > 0 ? availableModels : undefined
+        });
+      }
+    } else {
+      return res.status(400).json({ 
         success: false,
-        error: 'Pricing not found for this device configuration',
-        requested: { brand, model, storage },
-        availableBrands: Object.keys(pricingRules),
-        availableModels: availableModels.length > 0 ? availableModels : undefined
+        error: 'Missing required fields. Provide either (productId + variantId) OR (brand + model + storage)' 
+      });
+    }
+
+    // At this point, basePrice should be set (either from new or legacy system)
+    if (!basePrice) {
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to determine base price'
       });
     }
 
@@ -590,7 +802,9 @@ app.post('/api/pricing/calculate', async (req, res) => {
       conditionMultiplier: multiplier,
       finalPrice,
       currency: 'GBP',
-      formattedPrice: `£${finalPrice.toFixed(2)}`
+      formattedPrice: `£${finalPrice.toFixed(2)}`,
+      // Include system type for debugging
+      system: productId && variantId ? 'variant-based' : 'legacy'
     });
 
   } catch (error) {
