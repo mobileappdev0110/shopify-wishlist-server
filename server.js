@@ -632,7 +632,7 @@ app.get('/api/products/trade-in', async (req, res) => {
         title: edge.node.title,
         handle: edge.node.handle,
         vendor: edge.node.vendor,
-        tags: edge.node.tags,
+        tags: Array.isArray(edge.node.tags) ? edge.node.tags : (edge.node.tags ? [edge.node.tags] : []),
         featuredImage: edge.node.featuredImage ? {
           url: edge.node.featuredImage.url,
           altText: edge.node.featuredImage.altText || edge.node.title,
@@ -668,19 +668,51 @@ app.get('/api/products/trade-in', async (req, res) => {
 
     // Filter by device type if specified (check tags or vendor)
     let filteredProducts = allProducts;
-    if (deviceType) {
+    if (deviceType && deviceType.trim() !== '') {
+      const deviceTypeLower = deviceType.toLowerCase();
+      console.log(`🔍 Filtering products for device type: "${deviceType}" (${deviceTypeLower})`);
+      console.log(`📦 Total products before filtering: ${allProducts.length}`);
+      
       filteredProducts = allProducts.filter(product => {
-        const tags = product.tags.map(t => t.toLowerCase());
-        const deviceTypeLower = deviceType.toLowerCase();
-        // Only match products that have the device type tag
-        // Don't match by vendor name to avoid false positives
-        return tags.includes(deviceTypeLower) || 
-               tags.includes(`trade-in-${deviceTypeLower}`);
+        // Ensure tags is an array
+        if (!product.tags || !Array.isArray(product.tags)) {
+          console.log(`⚠️ Product "${product.title}" has invalid tags:`, product.tags);
+          return false;
+        }
+        
+        // Convert tags to lowercase array
+        const tags = product.tags.map(t => String(t).toLowerCase().trim());
+        
+        // Check for exact match (not substring)
+        const hasExactMatch = tags.includes(deviceTypeLower) || 
+                             tags.includes(`trade-in-${deviceTypeLower}`);
+        
+        if (hasExactMatch) {
+          console.log(`✅ Product "${product.title}" matches - tags:`, tags);
+        }
+        
+        return hasExactMatch;
       });
+      
+      console.log(`📊 Products after filtering: ${filteredProducts.length}`);
       
       // Log if no products found for this device type
       if (filteredProducts.length === 0) {
         console.log(`ℹ️ No products found with "${deviceType}" tag. Products need to be tagged with "${deviceType}" or "trade-in-${deviceType}" to appear on this page.`);
+        // Log all available tags for debugging
+        const allTags = new Set();
+        allProducts.forEach(p => {
+          if (p.tags && Array.isArray(p.tags)) {
+            p.tags.forEach(t => allTags.add(String(t).toLowerCase()));
+          }
+        });
+        console.log(`📋 Available tags in all products:`, Array.from(allTags).sort());
+      } else {
+        // Log which products matched
+        console.log(`✅ Matched products:`, filteredProducts.map(p => ({
+          title: p.title,
+          tags: p.tags
+        })));
       }
     }
 
