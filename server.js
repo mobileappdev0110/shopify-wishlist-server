@@ -530,6 +530,24 @@ app.get('/api/products/trade-in', async (req, res) => {
               handle
               vendor
               tags
+              featuredImage {
+                id
+                url
+                altText
+                width
+                height
+              }
+              images(first: 5) {
+                edges {
+                  node {
+                    id
+                    url
+                    altText
+                    width
+                    height
+                  }
+                }
+              }
               variants(first: 50) {
                 edges {
                   node {
@@ -540,6 +558,11 @@ app.get('/api/products/trade-in', async (req, res) => {
                     selectedOptions {
                       name
                       value
+                    }
+                    image {
+                      id
+                      url
+                      altText
                     }
                   }
                 }
@@ -610,12 +633,28 @@ app.get('/api/products/trade-in', async (req, res) => {
         handle: edge.node.handle,
         vendor: edge.node.vendor,
         tags: edge.node.tags,
+        featuredImage: edge.node.featuredImage ? {
+          url: edge.node.featuredImage.url,
+          altText: edge.node.featuredImage.altText || edge.node.title,
+          width: edge.node.featuredImage.width,
+          height: edge.node.featuredImage.height
+        } : null,
+        images: edge.node.images?.edges?.map(img => ({
+          url: img.node.url,
+          altText: img.node.altText || edge.node.title,
+          width: img.node.width,
+          height: img.node.height
+        })) || [],
         variants: edge.node.variants.edges.map(v => ({
           id: v.node.id.replace('gid://shopify/ProductVariant/', ''),
           gid: v.node.id,
           title: v.node.title,
           price: parseFloat(v.node.price),
           availableForSale: v.node.availableForSale,
+          image: v.node.image ? {
+            url: v.node.image.url,
+            altText: v.node.image.altText || v.node.title
+          } : null,
           options: v.node.selectedOptions.reduce((acc, opt) => {
             acc[opt.name.toLowerCase()] = opt.value;
             return acc;
