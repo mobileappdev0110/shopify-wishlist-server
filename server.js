@@ -672,16 +672,15 @@ app.get('/api/products/trade-in', async (req, res) => {
       filteredProducts = allProducts.filter(product => {
         const tags = product.tags.map(t => t.toLowerCase());
         const deviceTypeLower = deviceType.toLowerCase();
+        // Only match products that have the device type tag
+        // Don't match by vendor name to avoid false positives
         return tags.includes(deviceTypeLower) || 
-               tags.includes(`trade-in-${deviceTypeLower}`) ||
-               product.vendor?.toLowerCase().includes(deviceTypeLower);
+               tags.includes(`trade-in-${deviceTypeLower}`);
       });
       
-      // If no products found for specific device type, show all trade-in products as fallback
-      // This allows users to see products even if they're not specifically tagged with device type
-      if (filteredProducts.length === 0 && allProducts.length > 0) {
-        console.log(`⚠️ No products found with "${deviceType}" tag. Showing all trade-in products as fallback.`);
-        filteredProducts = allProducts;
+      // Log if no products found for this device type
+      if (filteredProducts.length === 0) {
+        console.log(`ℹ️ No products found with "${deviceType}" tag. Products need to be tagged with "${deviceType}" or "trade-in-${deviceType}" to appear on this page.`);
       }
     }
 
