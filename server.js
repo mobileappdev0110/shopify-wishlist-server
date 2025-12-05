@@ -1561,23 +1561,26 @@ app.post('/api/products/import-excel', async (req, res) => {
           const allCols = Object.keys(row);
           for (const col of allCols) {
             const colLower = col.toLowerCase();
-            if ((colLower.includes('image') || colLower.includes('img') || colLower.includes('url')) && 
-                row[col] && row[col].toString().trim() !== '' && 
-                !colLower.includes('excellent') && !colLower.includes('good') && !colLower.includes('fair') && !colLower.includes('faulty')) {
-              const val = row[col];
-              if (val && typeof val === 'string' && (val.startsWith('http://') || val.startsWith('https://') || val.startsWith('//'))) {
-                imageUrl = val.trim();
-                console.log(`📷 Found image URL in column "${col}": ${imageUrl}`);
+            // Look for image-related columns (but exclude condition columns)
+            if ((colLower.includes('image') || colLower.includes('img') || (colLower.includes('url') && !colLower.includes('excellent') && !colLower.includes('good') && !colLower.includes('fair') && !colLower.includes('faulty'))) && 
+                row[col] && row[col] !== null && row[col] !== undefined && row[col].toString().trim() !== '') {
+              const val = row[col].toString().trim();
+              // Accept any non-empty value (not just URLs starting with http)
+              // This allows for relative URLs, file paths, or any image identifier
+              if (val && val.length > 0) {
+                imageUrl = val;
+                console.log(`📷 Found image URL in column "${col}": ${imageUrl.substring(0, 80)}`);
                 break;
               }
             }
           }
         }
         
-        if (!imageUrl) {
-          imageUrl = null;
+        // Log if image URL was found or not
+        if (imageUrl) {
+          console.log(`✅ Found image URL for ${brand} ${model}: ${imageUrl.substring(0, Math.min(80, imageUrl.length))}${imageUrl.length > 80 ? '...' : ''}`);
         } else {
-          console.log(`✅ Found image URL for ${brand} ${model}: ${imageUrl.substring(0, 50)}...`);
+          console.log(`⚠️ No image URL found for ${brand} ${model} - available columns: ${Object.keys(row).join(', ')}`);
         }
 
         if (!brand || !model) {
@@ -1680,10 +1683,15 @@ app.post('/api/products/import-excel', async (req, res) => {
             storage: storage,
             color: color ? color.trim() : null,
             deviceType: deviceType,
-            imageUrl: imageUrl || null,
+            imageUrl: imageUrl ? imageUrl.trim() : null, // Ensure imageUrl is trimmed
             prices: prices,
             updatedAt: new Date().toISOString()
           };
+          
+          // Log imageUrl for debugging
+          if (imageUrl) {
+            console.log(`💾 Saving product with imageUrl: ${brand} ${model} ${storage} - ${imageUrl.substring(0, 60)}...`);
+          }
 
           if (existing) {
             // Track changes
