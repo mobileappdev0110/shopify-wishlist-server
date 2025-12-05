@@ -2126,6 +2126,80 @@ app.get('/api/trade-in/:id', async (req, res) => {
   }
 });
 
+// Update submission (edit)
+app.put('/api/trade-in/:id', async (req, res) => {
+  try {
+    const authHeader = req.headers['x-api-key'];
+    if (authHeader !== API_SECRET) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const submissionId = parseInt(req.params.id);
+    const updateData = req.body;
+
+    // Ensure MongoDB connection
+    await ensureMongoConnection();
+
+    let submission = null;
+    if (db) {
+      submission = await db.collection('submissions').findOne({ id: submissionId });
+    } else {
+      submission = tradeInSubmissions.find(s => s.id === submissionId);
+    }
+
+    if (!submission) {
+      return res.status(404).json({ error: 'Submission not found' });
+    }
+
+    // Update submission fields
+    const updatedSubmission = {
+      ...submission,
+      name: updateData.name || submission.name,
+      email: updateData.email || submission.email,
+      phone: updateData.phone !== undefined ? updateData.phone : submission.phone,
+      postcode: updateData.postcode !== undefined ? updateData.postcode : submission.postcode,
+      brand: updateData.brand || submission.brand,
+      model: updateData.model || submission.model,
+      storage: updateData.storage !== undefined ? updateData.storage : submission.storage,
+      condition: updateData.condition || submission.condition,
+      finalPrice: updateData.finalPrice !== undefined ? parseFloat(updateData.finalPrice) : submission.finalPrice,
+      status: updateData.status || submission.status,
+      notes: updateData.notes !== undefined ? updateData.notes : submission.notes,
+      updatedAt: new Date().toISOString()
+    };
+
+    // Save to MongoDB
+    if (db) {
+      await db.collection('submissions').updateOne(
+        { id: submissionId },
+        { $set: updatedSubmission }
+      );
+    }
+
+    // Update in-memory cache
+    const index = tradeInSubmissions.findIndex(s => s.id === submissionId);
+    if (index !== -1) {
+      tradeInSubmissions[index] = updatedSubmission;
+    }
+
+    // Save to file (if not on Vercel)
+    if (process.env.VERCEL !== '1') {
+      await saveSubmissions();
+    }
+
+    console.log(`✅ Updated submission #${submissionId}`);
+
+    res.json({
+      success: true,
+      submission: updatedSubmission
+    });
+
+  } catch (error) {
+    console.error('Error updating submission:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Update submission status (admin)
 app.post('/api/trade-in/:id/update-status', async (req, res) => {
   try {
@@ -2313,11 +2387,11 @@ app.post('/api/trade-in/:id/issue-credit', async (req, res) => {
     }
 
     // Generate secure, random gift card code (not predictable)
-    // Format: TRADE-XXXX-XXXX (e.g., TRADE-A3K9-M7P2)
+    // Format: TECHCORNER-XXXX-XXXX (e.g., TECHCORNER-A3K9-M7P2)
     // This prevents guessing sequential codes
     function generateSecureGiftCardCode() {
       const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // Removed confusing chars (0, O, I, 1)
-      let code = 'TRADE-';
+      let code = 'TECHCORNER-';
       
       // Generate 4 random characters
       for (let i = 0; i < 4; i++) {
@@ -2387,7 +2461,7 @@ app.post('/api/trade-in/:id/issue-credit', async (req, res) => {
       if (attempts >= maxAttempts) {
         // Fallback: use submission ID + random suffix if we can't generate unique code
         const randomSuffix = Math.random().toString(36).substring(2, 6).toUpperCase();
-        giftCardCode = `TRADE-${submission.id.toString().padStart(6, '0')}-${randomSuffix}`;
+        giftCardCode = `TECHCORNER-${submission.id.toString().padStart(6, '0')}-${randomSuffix}`;
         console.warn(`Could not generate unique code after ${maxAttempts} attempts, using fallback: ${giftCardCode}`);
         break;
       }
