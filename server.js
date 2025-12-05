@@ -511,7 +511,9 @@ app.get('/api/wishlist/get', async (req, res) => {
 // TRADE-IN PRICING ENDPOINTS
 // ============================================
 
-// Get trade-in products from Shopify (filtered by tag)
+// OLD ENDPOINT - DISABLED: Now using MongoDB endpoint below (line 1165)
+// This endpoint fetched from Shopify but has been replaced by the database-driven endpoint
+/*
 app.get('/api/products/trade-in', async (req, res) => {
   try {
     const { deviceType } = req.query; // Optional: filter by device type
@@ -734,6 +736,7 @@ app.get('/api/products/trade-in', async (req, res) => {
     });
   }
 });
+*/
 
 // Calculate valuation (supports both old and new systems)
 app.post('/api/pricing/calculate', async (req, res) => {
@@ -1182,6 +1185,18 @@ app.get('/api/products/trade-in', async (req, res) => {
 
     // Fetch products from MongoDB
     const products = await db.collection('trade_in_products').find(query).toArray();
+    
+    console.log(`📦 Fetched ${products.length} products from MongoDB for deviceType: ${deviceType || 'all'}`);
+    if (products.length > 0) {
+      console.log(`✅ Sample product:`, {
+        brand: products[0].brand,
+        model: products[0].model,
+        storage: products[0].storage,
+        deviceType: products[0].deviceType,
+        hasImage: !!products[0].imageUrl,
+        hasPrices: !!products[0].prices
+      });
+    }
 
     // Transform to match frontend expected format
     const transformedProducts = products.reduce((acc, product) => {
@@ -1237,6 +1252,16 @@ app.get('/api/products/trade-in', async (req, res) => {
     }, {});
 
     const productArray = Object.values(transformedProducts);
+    
+    console.log(`✅ Transformed to ${productArray.length} grouped products (by brand/model)`);
+    if (productArray.length > 0) {
+      console.log(`📱 Sample transformed product:`, {
+        title: productArray[0].title,
+        vendor: productArray[0].vendor,
+        variantsCount: productArray[0].variants?.length || 0,
+        hasImage: !!productArray[0].featuredImage
+      });
+    }
 
     res.json({
       success: true,
