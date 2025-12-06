@@ -1563,31 +1563,45 @@ app.post('/api/products/import-excel', async (req, res) => {
     // Build column mapping: combine main header with sub-header for storage columns
     // For condition columns (EXCELLENT, GOOD, FAIR), use sub-header (64GB, 128GB, etc.)
     // For other columns (DEVICE, BRAND, MODEL, FAULTY, image_url), use main header
-    // Also track which condition each column index belongs to (since storage names repeat)
+    // Track which condition each column index belongs to (since storage names repeat)
+    // Note: Excel merged cells mean condition headers only appear in first column of span
     const columnMapping = [];
     const columnConditionByIndex = {}; // Maps column index to condition (Excellent, Good, Fair, Faulty)
+    let currentCondition = null; // Track current condition as we iterate
     
     for (let col = range.s.c; col <= range.e.c; col++) {
       const colIdx = col - range.s.c;
       const mainHeader = mainHeaderRow[colIdx] || '';
       const subHeader = subHeaderRow && subHeaderRow[colIdx] ? subHeaderRow[colIdx] : '';
       
-      // If main header is a condition (EXCELLENT, GOOD, FAIR) and sub-header exists, use sub-header
-      // Otherwise use main header
       const mainUpper = mainHeader.toUpperCase().trim();
       let columnName;
-      if ((mainUpper === 'EXCELLENT' || mainUpper === 'GOOD' || mainUpper === 'FAIR') && subHeader) {
-        columnName = subHeader || `__EMPTY_${colIdx}`;
-        // Map this column index to its condition
-        if (mainUpper === 'EXCELLENT') columnConditionByIndex[colIdx] = 'Excellent';
-        else if (mainUpper === 'GOOD') columnConditionByIndex[colIdx] = 'Good';
-        else if (mainUpper === 'FAIR') columnConditionByIndex[colIdx] = 'Fair';
-      } else if (mainUpper === 'FAULTY') {
-        // FAULTY might have a sub-header "PRICE" or just be the price column
+      
+      // Check if this is a new condition header
+      if (mainUpper === 'EXCELLENT' || mainUpper === 'GOOD' || mainUpper === 'FAIR' || mainUpper === 'FAULTY') {
+        // This is a condition header - update current condition
+        if (mainUpper === 'EXCELLENT') currentCondition = 'Excellent';
+        else if (mainUpper === 'GOOD') currentCondition = 'Good';
+        else if (mainUpper === 'FAIR') currentCondition = 'Fair';
+        else if (mainUpper === 'FAULTY') currentCondition = 'Faulty';
+        
+        // For condition headers, use sub-header if available, otherwise use main header
         columnName = subHeader || mainHeader || `__EMPTY_${colIdx}`;
-        columnConditionByIndex[colIdx] = 'Faulty';
+        if (currentCondition) {
+          columnConditionByIndex[colIdx] = currentCondition;
+        }
+      } else if (currentCondition && subHeader) {
+        // We're in a condition section and have a sub-header (storage size)
+        // This is a storage column under the current condition
+        columnName = subHeader;
+        columnConditionByIndex[colIdx] = currentCondition;
       } else {
+        // Regular column (DEVICE, BRAND, MODEL, image_url, etc.)
         columnName = mainHeader || subHeader || `__EMPTY_${colIdx}`;
+        // Reset current condition when we hit a non-condition column
+        if (mainUpper && mainUpper !== '' && !mainUpper.includes('EMPTY')) {
+          currentCondition = null;
+        }
       }
       
       columnMapping.push(columnName);
@@ -1771,16 +1785,38 @@ app.post('/api/products/import-excel', async (req, res) => {
             const condition = columnConditionByIndex[colIdx];
             const colName = columnMapping[colIdx];
             
+            // Debug logging for first row, first storage
+            if (storage === '64GB' && i === 0) {
+              console.log(`🔍 Column ${colIdx} (${colName}): condition=${condition}, value="${row[colName]}"`);
+            }
+            
             if (condition && row[colName] !== undefined && row[colName] !== null && row[colName] !== '') {
               const val = parseFloat(row[colName]);
               if (!isNaN(val) && val > 0) {
-                // Map condition to price object key
-                if (condition === 'Excellent') prices.Excellent = val;
-                else if (condition === 'Good') prices.Good = val;
-                else if (condition === 'Fair') prices.Fair = val;
-                else if (condition === 'Faulty') prices.Faulty = val;
+                // Map condition to price object key (only set if not already set)
+                if (condition === 'Excellent' && prices.Excellent === null) {
+                  prices.Excellent = val;
+                  if (storage === '64GB' && i === 0) console.log(`✅ Set Excellent price: £${val}`);
+                }
+                else if (condition === 'Good' && prices.Good === null) {
+                  prices.Good = val;
+                  if (storage === '64GB' && i === 0) console.log(`✅ Set Good price: £${val}`);
+                }
+                else if (condition === 'Fair' && prices.Fair === null) {
+                  prices.Fair = val;
+                  if (storage === '64GB' && i === 0) console.log(`✅ Set Fair price: £${val}`);
+                }
+                else if (condition === 'Faulty' && prices.Faulty === null) {
+                  prices.Faulty = val;
+                  if (storage === '64GB' && i === 0) console.log(`✅ Set Faulty price: £${val}`);
+                }
               }
             }
+          }
+          
+          // Debug: Log extracted prices for first row
+          if (i === 0) {
+            console.log(`📊 ${brand} ${model} ${storage} prices:`, prices);
           }
           
           // Fallback: if columnConditionByIndex wasn't populated, try sequential position
