@@ -1563,7 +1563,10 @@ app.post('/api/products/import-excel', async (req, res) => {
     // Build column mapping: combine main header with sub-header for storage columns
     // For condition columns (EXCELLENT, GOOD, FAIR), use sub-header (64GB, 128GB, etc.)
     // For other columns (DEVICE, BRAND, MODEL, FAULTY, image_url), use main header
+    // Also track which condition each column index belongs to (since storage names repeat)
     const columnMapping = [];
+    const columnConditionByIndex = {}; // Maps column index to condition (Excellent, Good, Fair, Faulty)
+    
     for (let col = range.s.c; col <= range.e.c; col++) {
       const colIdx = col - range.s.c;
       const mainHeader = mainHeaderRow[colIdx] || '';
@@ -1572,14 +1575,26 @@ app.post('/api/products/import-excel', async (req, res) => {
       // If main header is a condition (EXCELLENT, GOOD, FAIR) and sub-header exists, use sub-header
       // Otherwise use main header
       const mainUpper = mainHeader.toUpperCase().trim();
+      let columnName;
       if ((mainUpper === 'EXCELLENT' || mainUpper === 'GOOD' || mainUpper === 'FAIR') && subHeader) {
-        columnMapping.push(subHeader || `__EMPTY_${colIdx}`);
+        columnName = subHeader || `__EMPTY_${colIdx}`;
+        // Map this column index to its condition
+        if (mainUpper === 'EXCELLENT') columnConditionByIndex[colIdx] = 'Excellent';
+        else if (mainUpper === 'GOOD') columnConditionByIndex[colIdx] = 'Good';
+        else if (mainUpper === 'FAIR') columnConditionByIndex[colIdx] = 'Fair';
+      } else if (mainUpper === 'FAULTY') {
+        // FAULTY might have a sub-header "PRICE" or just be the price column
+        columnName = subHeader || mainHeader || `__EMPTY_${colIdx}`;
+        columnConditionByIndex[colIdx] = 'Faulty';
       } else {
-        columnMapping.push(mainHeader || subHeader || `__EMPTY_${colIdx}`);
+        columnName = mainHeader || subHeader || `__EMPTY_${colIdx}`;
       }
+      
+      columnMapping.push(columnName);
     }
     
     console.log('📋 Column mapping:', columnMapping);
+    console.log('📋 Column condition by index:', columnConditionByIndex);
     
     // Read data starting from row after sub-header row
     const dataStartRow = subHeaderRowIndex !== -1 ? subHeaderRowIndex + 1 : mainHeaderRowIndex + 1;
@@ -1605,6 +1620,7 @@ app.post('/api/products/import-excel', async (req, res) => {
     if (data.length > 0) {
       console.log('📋 First data row keys:', Object.keys(data[0]));
       console.log('📋 First data row sample:', JSON.stringify(data[0], null, 2));
+      console.log('📋 Column condition by index:', columnConditionByIndex);
     }
 
     // Helper function to find column value (case-insensitive, tries multiple variations)
@@ -1711,59 +1727,20 @@ app.post('/api/products/import-excel', async (req, res) => {
         }
 
         // Extract prices for each storage capacity and condition
-        // Excel structure: DEVICE | BRAND | MODEL | EXCELLENT (64GB, 128GB, 256GB, ...) | GOOD (64GB, 128GB, ...) | FAIR (64GB, 128GB, ...) | FAULTY (64GB, 128GB, ...) | image_url
-        // Storage columns can be either named (64GB, 128GB, etc.) or __EMPTY columns positioned after each condition header
+        // After column mapping, we need to match storage columns by their position and condition
+        // Use columnConditionByIndex to find which condition each column index belongs to
         
-        // Get all column names in order
+        // Get all column names from the row (these are the mapped column names like "64GB", "128GB", etc.)
         const allColumns = Object.keys(row);
         
-        // Find positions of condition headers
-        let excellentIdx = -1, goodIdx = -1, fairIdx = -1, faultyIdx = -1;
-        allColumns.forEach((col, idx) => {
-          const colUpper = col.toUpperCase().trim();
-          if (colUpper === 'EXCELLENT' && excellentIdx === -1) excellentIdx = idx;
-          if (colUpper === 'GOOD' && goodIdx === -1) goodIdx = idx;
-          if (colUpper === 'FAIR' && fairIdx === -1) fairIdx = idx;
-          if (colUpper === 'FAULTY' && faultyIdx === -1) faultyIdx = idx;
+        // Build a map of column name -> column index in the original mapping
+        const columnNameToIndex = {};
+        columnMapping.forEach((colName, idx) => {
+          if (!columnNameToIndex[colName]) {
+            columnNameToIndex[colName] = [];
+          }
+          columnNameToIndex[colName].push(idx);
         });
-        
-        // Helper to find storage column for a condition
-        const findStorageColumn = (conditionStartIdx, storage) => {
-          // Normalize storage for matching (e.g., "128GB" matches "128GB", "128 GB", "__EMPTY_X")
-          const storageNormalized = storage.toUpperCase().replace(/\s+/g, '');
-          
-          // First, try to find a column that matches the storage name exactly
-          for (let i = conditionStartIdx + 1; i < allColumns.length; i++) {
-            const colName = allColumns[i];
-            const colUpper = colName.toUpperCase().replace(/\s+/g, '');
-            
-            // If we hit the next condition header, stop
-            if (colUpper === 'EXCELLENT' || colUpper === 'GOOD' || colUpper === 'FAIR' || colUpper === 'FAULTY') {
-              break;
-            }
-            
-            // Check if column name matches storage
-            if (colUpper === storageNormalized || colUpper.includes(storageNormalized) || storageNormalized.includes(colUpper)) {
-              return colName;
-            }
-          }
-          
-          // If not found by name, try sequential position (for __EMPTY columns)
-          const storageIndex = storageOptions.indexOf(storage);
-          if (storageIndex !== -1) {
-            const colIdx = conditionStartIdx + 1 + storageIndex;
-            if (colIdx < allColumns.length) {
-              const colName = allColumns[colIdx];
-              // Make sure we haven't hit the next condition header
-              const colUpper = colName.toUpperCase().trim();
-              if (colUpper !== 'EXCELLENT' && colUpper !== 'GOOD' && colUpper !== 'FAIR' && colUpper !== 'FAULTY') {
-                return colName;
-              }
-            }
-          }
-          
-          return null;
-        };
         
         // For each storage option, extract prices from each condition section
         for (let storageIdx = 0; storageIdx < storageOptions.length; storageIdx++) {
@@ -1775,37 +1752,68 @@ app.post('/api/products/import-excel', async (req, res) => {
             Faulty: null
           };
           
-          // Extract from EXCELLENT section
-          if (excellentIdx !== -1) {
-            const colName = findStorageColumn(excellentIdx, storage);
-            if (colName && row[colName]) {
+          // Normalize storage for matching
+          const storageNormalized = storage.toUpperCase().replace(/\s+/g, '');
+          
+          // Find all column indices that match this storage size
+          const matchingIndices = [];
+          columnMapping.forEach((colName, idx) => {
+            const colUpper = colName.toUpperCase().replace(/\s+/g, '');
+            if (colUpper === storageNormalized || 
+                colUpper.includes(storageNormalized) || 
+                storageNormalized.includes(colUpper)) {
+              matchingIndices.push(idx);
+            }
+          });
+          
+          // For each matching column index, check its condition and extract price
+          for (const colIdx of matchingIndices) {
+            const condition = columnConditionByIndex[colIdx];
+            const colName = columnMapping[colIdx];
+            
+            if (condition && row[colName] !== undefined && row[colName] !== null && row[colName] !== '') {
+              const val = parseFloat(row[colName]);
+              if (!isNaN(val) && val > 0) {
+                // Map condition to price object key
+                if (condition === 'Excellent') prices.Excellent = val;
+                else if (condition === 'Good') prices.Good = val;
+                else if (condition === 'Fair') prices.Fair = val;
+                else if (condition === 'Faulty') prices.Faulty = val;
+              }
+            }
+          }
+          
+          // Fallback: if columnConditionByIndex wasn't populated, try sequential position
+          if (Object.keys(columnConditionByIndex).length === 0) {
+            // Try to find condition headers in column names
+            let excellentStart = -1, goodStart = -1, fairStart = -1, faultyStart = -1;
+            columnMapping.forEach((colName, idx) => {
+              const colUpper = colName.toUpperCase().trim();
+              if (colUpper === 'EXCELLENT' && excellentStart === -1) excellentStart = idx;
+              if (colUpper === 'GOOD' && goodStart === -1) goodStart = idx;
+              if (colUpper === 'FAIR' && fairStart === -1) fairStart = idx;
+              if (colUpper === 'FAULTY' && faultyStart === -1) faultyStart = idx;
+            });
+            
+            // Try sequential position for each condition
+            if (excellentStart !== -1 && excellentStart + 1 + storageIdx < columnMapping.length) {
+              const colName = columnMapping[excellentStart + 1 + storageIdx];
               const val = parseFloat(row[colName]);
               if (!isNaN(val) && val > 0) prices.Excellent = val;
             }
-          }
-          
-          // Extract from GOOD section
-          if (goodIdx !== -1) {
-            const colName = findStorageColumn(goodIdx, storage);
-            if (colName && row[colName]) {
+            if (goodStart !== -1 && goodStart + 1 + storageIdx < columnMapping.length) {
+              const colName = columnMapping[goodStart + 1 + storageIdx];
               const val = parseFloat(row[colName]);
               if (!isNaN(val) && val > 0) prices.Good = val;
             }
-          }
-          
-          // Extract from FAIR section
-          if (fairIdx !== -1) {
-            const colName = findStorageColumn(fairIdx, storage);
-            if (colName && row[colName]) {
+            if (fairStart !== -1 && fairStart + 1 + storageIdx < columnMapping.length) {
+              const colName = columnMapping[fairStart + 1 + storageIdx];
               const val = parseFloat(row[colName]);
               if (!isNaN(val) && val > 0) prices.Fair = val;
             }
-          }
-          
-          // Extract from FAULTY section
-          if (faultyIdx !== -1) {
-            const colName = findStorageColumn(faultyIdx, storage);
-            if (colName && row[colName]) {
+            if (faultyStart !== -1 && faultyStart + 1 < columnMapping.length) {
+              // FAULTY usually has just one price column
+              const colName = columnMapping[faultyStart + 1];
               const val = parseFloat(row[colName]);
               if (!isNaN(val) && val > 0) prices.Faulty = val;
             }
