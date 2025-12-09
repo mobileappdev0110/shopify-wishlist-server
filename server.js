@@ -1758,7 +1758,7 @@ async function verifyAdminAccess(staffEmail) {
   }
 }
 
-// Verify staff admin access
+// Verify staff admin access (for Audit and Staff Admin pages - admin/manager only)
 app.get('/api/staff/verify-admin', async (req, res) => {
   try {
     const authHeader = req.headers['x-api-key'];
@@ -1789,7 +1789,7 @@ app.get('/api/staff/verify-admin', async (req, res) => {
       });
     }
 
-    // Check if staff has admin role
+    // Check if staff has admin or manager role (for Audit/Staff Admin pages)
     const isAdmin = staff.role === 'admin' || staff.role === 'manager';
     
     res.json({
@@ -1801,6 +1801,53 @@ app.get('/api/staff/verify-admin', async (req, res) => {
 
   } catch (error) {
     console.error('Error verifying admin access:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Verify staff access for Pricing/Trade-In pages (allows staff, manager, admin)
+app.get('/api/staff/verify-access', async (req, res) => {
+  try {
+    const authHeader = req.headers['x-api-key'];
+    if (authHeader !== API_SECRET) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    await ensureMongoConnection();
+    if (!db) {
+      return res.status(500).json({ error: 'Database connection failed' });
+    }
+
+    const staffEmail = req.headers['x-staff-identifier'] || req.query.email;
+    if (!staffEmail) {
+      return res.status(400).json({ error: 'Staff email required' });
+    }
+
+    const staff = await db.collection('staff_members').findOne({ 
+      email: staffEmail.trim().toLowerCase(),
+      active: true 
+    });
+
+    if (!staff) {
+      return res.json({
+        success: true,
+        hasAccess: false,
+        message: 'Staff member not found or inactive'
+      });
+    }
+
+    // All active staff (staff, manager, admin) can access Pricing/Trade-In pages
+    const hasAccess = true; // Any active staff member can access
+    
+    res.json({
+      success: true,
+      hasAccess: hasAccess,
+      role: staff.role,
+      permissions: staff.permissions
+    });
+
+  } catch (error) {
+    console.error('Error verifying staff access:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
