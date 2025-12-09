@@ -2466,6 +2466,49 @@ app.post('/api/products/import-excel', async (req, res) => {
     const columnConditionByIndex = {}; // Maps column index to condition (Excellent, Good, Fair, Faulty)
     let currentCondition = null; // Track current condition as we iterate
     
+    // First pass: identify condition headers and their start positions
+    const conditionStarts = {}; // Maps condition name to column index where it starts
+    for (let col = range.s.c; col <= range.e.c; col++) {
+      const colIdx = col - range.s.c;
+      const mainHeader = mainHeaderRow[colIdx] || '';
+      const mainUpper = mainHeader.toUpperCase().trim();
+      
+      if (mainUpper === 'EXCELLENT' && !conditionStarts['Excellent']) {
+        conditionStarts['Excellent'] = colIdx;
+      } else if (mainUpper === 'GOOD' && !conditionStarts['Good']) {
+        conditionStarts['Good'] = colIdx;
+      } else if (mainUpper === 'FAIR' && !conditionStarts['Fair']) {
+        conditionStarts['Fair'] = colIdx;
+      } else if (mainUpper === 'FAULTY' && !conditionStarts['Faulty']) {
+        conditionStarts['Faulty'] = colIdx;
+      }
+    }
+    
+    // Second pass: build column mapping and assign conditions
+    // Determine where each condition section ends (start of next condition or non-condition column)
+    const conditionEnds = {};
+    const sortedConditions = Object.entries(conditionStarts).sort((a, b) => a[1] - b[1]);
+    for (let i = 0; i < sortedConditions.length; i++) {
+      const [condition, startIdx] = sortedConditions[i];
+      if (i < sortedConditions.length - 1) {
+        // End before next condition starts
+        conditionEnds[condition] = sortedConditions[i + 1][1];
+      } else {
+        // Last condition - end before image_url or end of columns
+        let endIdx = range.e.c - range.s.c + 1;
+        for (let col = range.s.c; col <= range.e.c; col++) {
+          const colIdx = col - range.s.c;
+          const mainHeader = mainHeaderRow[colIdx] || '';
+          const mainUpper = mainHeader.toUpperCase().trim();
+          if (mainUpper.includes('IMAGE') || mainUpper.includes('URL') || mainUpper.includes('IMG')) {
+            endIdx = colIdx;
+            break;
+          }
+        }
+        conditionEnds[condition] = endIdx;
+      }
+    }
+    
     for (let col = range.s.c; col <= range.e.c; col++) {
       const colIdx = col - range.s.c;
       const mainHeader = mainHeaderRow[colIdx] || '';
@@ -2474,7 +2517,7 @@ app.post('/api/products/import-excel', async (req, res) => {
       const mainUpper = mainHeader.toUpperCase().trim();
       let columnName;
       
-      // Check if this is a new condition header
+      // Check if this is a condition header
       if (mainUpper === 'EXCELLENT' || mainUpper === 'GOOD' || mainUpper === 'FAIR' || mainUpper === 'FAULTY') {
         // This is a condition header - update current condition
         if (mainUpper === 'EXCELLENT') currentCondition = 'Excellent';
@@ -2487,17 +2530,40 @@ app.post('/api/products/import-excel', async (req, res) => {
         if (currentCondition) {
           columnConditionByIndex[colIdx] = currentCondition;
         }
-      } else if (currentCondition && subHeader) {
-        // We're in a condition section and have a sub-header (storage size)
-        // This is a storage column under the current condition
-        columnName = subHeader;
-        columnConditionByIndex[colIdx] = currentCondition;
       } else {
-        // Regular column (DEVICE, BRAND, MODEL, image_url, etc.)
-        columnName = mainHeader || subHeader || `__EMPTY_${colIdx}`;
-        // Reset current condition when we hit a non-condition column
-        if (mainUpper && mainUpper !== '' && !mainUpper.includes('EMPTY')) {
-          currentCondition = null;
+        // Check if this column belongs to a condition section
+        let belongsToCondition = null;
+        for (const [condition, startIdx] of Object.entries(conditionStarts)) {
+          const endIdx = conditionEnds[condition] || (range.e.c - range.s.c + 1);
+          if (colIdx >= startIdx && colIdx < endIdx) {
+            belongsToCondition = condition;
+            break;
+          }
+        }
+        
+        if (belongsToCondition) {
+          // This column belongs to a condition section
+          if (subHeader) {
+            // This is a storage column under a condition section
+            columnName = subHeader;
+            columnConditionByIndex[colIdx] = belongsToCondition;
+          } else {
+            // This might be an empty cell within a condition section (merged cell continuation)
+            // Use main header if available, otherwise mark as empty
+            columnName = mainHeader || `__EMPTY_${colIdx}`;
+            // Still assign the condition if we have a main header that's not a condition name
+            if (mainHeader && mainHeader.trim() !== '') {
+              columnConditionByIndex[colIdx] = belongsToCondition;
+            }
+          }
+          currentCondition = belongsToCondition; // Keep track for next iteration
+        } else {
+          // Regular column (DEVICE, BRAND, MODEL, image_url, etc.)
+          columnName = mainHeader || subHeader || `__EMPTY_${colIdx}`;
+          // Reset current condition when we hit a non-condition column
+          if (mainUpper && mainUpper !== '' && !mainUpper.includes('EMPTY') && !mainUpper.includes('IMAGE') && !mainUpper.includes('URL')) {
+            currentCondition = null;
+          }
         }
       }
       
