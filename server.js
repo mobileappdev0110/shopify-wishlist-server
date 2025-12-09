@@ -1426,6 +1426,8 @@ app.post('/api/products/admin', async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields: brand, model, storage, deviceType' });
     }
 
+    const staffIdentifier = req.headers['x-staff-identifier'] || req.body.staffIdentifier || 'Unknown';
+    
     const productData = {
       brand: brand.trim(),
       model: model.trim(),
@@ -1434,20 +1436,70 @@ app.post('/api/products/admin', async (req, res) => {
       deviceType: deviceType.toLowerCase(),
       imageUrl: imageUrl || null,
       prices: prices || {}, // { Excellent: 500, Good: 400, Fair: 300, Faulty: null }
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
+      lastEditedBy: staffIdentifier
     };
 
     if (id) {
-      // Update existing
+      // Update existing - get old data for audit
+      const oldProduct = await db.collection('trade_in_products').findOne({ _id: new ObjectId(id) });
+      
       const result = await db.collection('trade_in_products').updateOne(
         { _id: new ObjectId(id) },
         { $set: productData }
       );
+      
+      // Log audit trail
+      if (oldProduct && result.modifiedCount > 0) {
+        const changes = [];
+        if (oldProduct.brand !== productData.brand) changes.push({ field: 'brand', old: oldProduct.brand, new: productData.brand });
+        if (oldProduct.model !== productData.model) changes.push({ field: 'model', old: oldProduct.model, new: productData.model });
+        if (oldProduct.storage !== productData.storage) changes.push({ field: 'storage', old: oldProduct.storage, new: productData.storage });
+        if (oldProduct.deviceType !== productData.deviceType) changes.push({ field: 'deviceType', old: oldProduct.deviceType, new: productData.deviceType });
+        if (oldProduct.imageUrl !== productData.imageUrl) changes.push({ field: 'imageUrl', old: oldProduct.imageUrl || 'null', new: productData.imageUrl || 'null' });
+        
+        // Compare prices
+        const conditions = ['Excellent', 'Good', 'Fair', 'Faulty'];
+        conditions.forEach(condition => {
+          const oldPrice = oldProduct.prices?.[condition] || null;
+          const newPrice = productData.prices?.[condition] || null;
+          if (oldPrice !== newPrice) {
+            changes.push({ field: `price_${condition}`, old: oldPrice ? `£${oldPrice.toFixed(2)}` : 'null', new: newPrice ? `£${newPrice.toFixed(2)}` : 'null' });
+          }
+        });
+        
+        if (changes.length > 0) {
+          await logAudit({
+            action: 'update_product',
+            resourceType: 'product',
+            resourceId: id,
+            staffIdentifier: staffIdentifier,
+            changes: changes
+          });
+        }
+      }
+      
       res.json({ success: true, updated: result.modifiedCount > 0, id });
     } else {
       // Create new
       productData.createdAt = new Date().toISOString();
+      productData.createdBy = staffIdentifier;
       const result = await db.collection('trade_in_products').insertOne(productData);
+      
+      // Log audit trail
+      await logAudit({
+        action: 'create_product',
+        resourceType: 'product',
+        resourceId: result.insertedId.toString(),
+        staffIdentifier: staffIdentifier,
+        changes: [{
+          field: 'status',
+          old: null,
+          new: 'created',
+          description: `Created product: ${productData.brand} ${productData.model} ${productData.storage}`
+        }]
+      });
+      
       res.json({ success: true, id: result.insertedId.toString() });
     }
 
@@ -1472,9 +1524,16 @@ app.put('/api/products/admin/:id', async (req, res) => {
 
     const { id } = req.params;
     const { brand, model, storage, color, deviceType, imageUrl, prices } = req.body;
+    const staffIdentifier = req.headers['x-staff-identifier'] || req.body.staffIdentifier || 'Unknown';
 
     if (!brand || !model || !storage || !deviceType) {
       return res.status(400).json({ error: 'Missing required fields: brand, model, storage, deviceType' });
+    }
+
+    // Get old product for audit
+    const oldProduct = await db.collection('trade_in_products').findOne({ _id: new ObjectId(id) });
+    if (!oldProduct) {
+      return res.status(404).json({ error: 'Product not found' });
     }
 
     const productData = {
@@ -1485,7 +1544,8 @@ app.put('/api/products/admin/:id', async (req, res) => {
       deviceType: deviceType.toLowerCase(),
       imageUrl: imageUrl || null,
       prices: prices || {},
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
+      lastEditedBy: staffIdentifier
     };
 
     const result = await db.collection('trade_in_products').updateOne(
@@ -1495,6 +1555,36 @@ app.put('/api/products/admin/:id', async (req, res) => {
 
     if (result.matchedCount === 0) {
       return res.status(404).json({ error: 'Product not found' });
+    }
+
+    // Log audit trail
+    if (result.modifiedCount > 0) {
+      const changes = [];
+      if (oldProduct.brand !== productData.brand) changes.push({ field: 'brand', old: oldProduct.brand, new: productData.brand });
+      if (oldProduct.model !== productData.model) changes.push({ field: 'model', old: oldProduct.model, new: productData.model });
+      if (oldProduct.storage !== productData.storage) changes.push({ field: 'storage', old: oldProduct.storage, new: productData.storage });
+      if (oldProduct.deviceType !== productData.deviceType) changes.push({ field: 'deviceType', old: oldProduct.deviceType, new: productData.deviceType });
+      if (oldProduct.imageUrl !== productData.imageUrl) changes.push({ field: 'imageUrl', old: oldProduct.imageUrl || 'null', new: productData.imageUrl || 'null' });
+      
+      // Compare prices
+      const conditions = ['Excellent', 'Good', 'Fair', 'Faulty'];
+      conditions.forEach(condition => {
+        const oldPrice = oldProduct.prices?.[condition] || null;
+        const newPrice = productData.prices?.[condition] || null;
+        if (oldPrice !== newPrice) {
+          changes.push({ field: `price_${condition}`, old: oldPrice ? `£${oldPrice.toFixed(2)}` : 'null', new: newPrice ? `£${newPrice.toFixed(2)}` : 'null' });
+        }
+      });
+      
+      if (changes.length > 0) {
+        await logAudit({
+          action: 'update_product',
+          resourceType: 'product',
+          resourceId: id,
+          staffIdentifier: staffIdentifier,
+          changes: changes
+        });
+      }
     }
 
     res.json({ success: true, updated: result.modifiedCount > 0, id });
@@ -1519,12 +1609,100 @@ app.delete('/api/products/admin/:id', async (req, res) => {
     }
 
     const { id } = req.params;
+    const staffIdentifier = req.headers['x-staff-identifier'] || req.body.staffIdentifier || 'Unknown';
+    
+    // Get product before deletion for audit log
+    const product = await db.collection('trade_in_products').findOne({ _id: new ObjectId(id) });
+    
     const result = await db.collection('trade_in_products').deleteOne({ _id: new ObjectId(id) });
+
+    // Log audit trail
+    if (product && result.deletedCount > 0) {
+      await logAudit({
+        action: 'delete_product',
+        resourceType: 'product',
+        resourceId: id,
+        staffIdentifier: staffIdentifier,
+        changes: [{
+          field: 'status',
+          old: 'exists',
+          new: 'deleted',
+          description: `Deleted product: ${product.brand} ${product.model} ${product.storage}`
+        }]
+      });
+    }
 
     res.json({ success: true, deleted: result.deletedCount > 0 });
 
   } catch (error) {
     console.error('Error deleting product:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ============================================
+// AUDIT LOGGING SYSTEM
+// ============================================
+
+// Helper function to log audit trail
+async function logAudit({ action, resourceType, resourceId, staffIdentifier, changes, metadata = {} }) {
+  try {
+    await ensureMongoConnection();
+    if (!db) return;
+
+    const auditLog = {
+      action: action, // 'create_product', 'update_product', 'delete_product', 'update_submission', 'update_status', etc.
+      resourceType: resourceType, // 'product', 'submission', 'pricing'
+      resourceId: resourceId, // Product ID, Submission ID, etc.
+      staffIdentifier: staffIdentifier || 'Unknown', // Staff email or identifier
+      changes: changes || [], // Array of { field, old, new, description }
+      metadata: metadata, // Additional context
+      timestamp: new Date().toISOString(),
+      createdAt: new Date()
+    };
+
+    await db.collection('audit_logs').insertOne(auditLog);
+    console.log('📝 Audit log created:', { action, resourceType, resourceId, staffIdentifier });
+  } catch (error) {
+    console.error('Error logging audit:', error);
+    // Don't throw - audit logging failure shouldn't break the main operation
+  }
+}
+
+// Get audit logs (admin)
+app.get('/api/audit-logs', async (req, res) => {
+  try {
+    const authHeader = req.headers['x-api-key'];
+    if (authHeader !== API_SECRET) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    await ensureMongoConnection();
+    if (!db) {
+      return res.status(500).json({ error: 'Database connection failed' });
+    }
+
+    const { resourceType, resourceId, staffIdentifier, limit = 100 } = req.query;
+    
+    const query = {};
+    if (resourceType) query.resourceType = resourceType;
+    if (resourceId) query.resourceId = resourceId;
+    if (staffIdentifier) query.staffIdentifier = staffIdentifier;
+
+    const logs = await db.collection('audit_logs')
+      .find(query)
+      .sort({ timestamp: -1 })
+      .limit(parseInt(limit))
+      .toArray();
+
+    res.json({
+      success: true,
+      logs: logs,
+      count: logs.length
+    });
+
+  } catch (error) {
+    console.error('Error fetching audit logs:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -2325,6 +2503,7 @@ app.put('/api/trade-in/:id', async (req, res) => {
 
     const submissionId = parseInt(req.params.id);
     const updateData = req.body;
+    const staffIdentifier = req.headers['x-staff-identifier'] || req.body.staffIdentifier || 'Unknown';
 
     // Ensure MongoDB connection
     await ensureMongoConnection();
@@ -2340,6 +2519,20 @@ app.put('/api/trade-in/:id', async (req, res) => {
       return res.status(404).json({ error: 'Submission not found' });
     }
 
+    // Track changes for audit
+    const changes = [];
+    if (updateData.name && updateData.name !== submission.name) changes.push({ field: 'name', old: submission.name, new: updateData.name });
+    if (updateData.email && updateData.email !== submission.email) changes.push({ field: 'email', old: submission.email, new: updateData.email });
+    if (updateData.phone !== undefined && updateData.phone !== submission.phone) changes.push({ field: 'phone', old: submission.phone || 'null', new: updateData.phone || 'null' });
+    if (updateData.postcode !== undefined && updateData.postcode !== submission.postcode) changes.push({ field: 'postcode', old: submission.postcode || 'null', new: updateData.postcode || 'null' });
+    if (updateData.brand && updateData.brand !== submission.brand) changes.push({ field: 'brand', old: submission.brand, new: updateData.brand });
+    if (updateData.model && updateData.model !== submission.model) changes.push({ field: 'model', old: submission.model, new: updateData.model });
+    if (updateData.storage !== undefined && updateData.storage !== submission.storage) changes.push({ field: 'storage', old: submission.storage || 'null', new: updateData.storage || 'null' });
+    if (updateData.condition && updateData.condition !== submission.condition) changes.push({ field: 'condition', old: submission.condition, new: updateData.condition });
+    if (updateData.finalPrice !== undefined && parseFloat(updateData.finalPrice) !== submission.finalPrice) changes.push({ field: 'finalPrice', old: `£${submission.finalPrice.toFixed(2)}`, new: `£${parseFloat(updateData.finalPrice).toFixed(2)}` });
+    if (updateData.status && updateData.status !== submission.status) changes.push({ field: 'status', old: submission.status, new: updateData.status });
+    if (updateData.notes !== undefined && updateData.notes !== submission.notes) changes.push({ field: 'notes', old: submission.notes || 'null', new: updateData.notes || 'null' });
+
     // Update submission fields
     const updatedSubmission = {
       ...submission,
@@ -2354,7 +2547,8 @@ app.put('/api/trade-in/:id', async (req, res) => {
       finalPrice: updateData.finalPrice !== undefined ? parseFloat(updateData.finalPrice) : submission.finalPrice,
       status: updateData.status || submission.status,
       notes: updateData.notes !== undefined ? updateData.notes : submission.notes,
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
+      lastEditedBy: staffIdentifier
     };
 
     // Save to MongoDB
@@ -2374,6 +2568,17 @@ app.put('/api/trade-in/:id', async (req, res) => {
     // Save to file (if not on Vercel)
     if (process.env.VERCEL !== '1') {
       await saveSubmissions();
+    }
+
+    // Log audit trail
+    if (changes.length > 0) {
+      await logAudit({
+        action: 'update_submission',
+        resourceType: 'submission',
+        resourceId: submissionId.toString(),
+        staffIdentifier: staffIdentifier,
+        changes: changes
+      });
     }
 
     console.log(`✅ Updated submission #${submissionId}`);
@@ -2399,6 +2604,7 @@ app.post('/api/trade-in/:id/update-status', async (req, res) => {
 
     const id = parseInt(req.params.id);
     const { status, notes } = req.body;
+    const staffIdentifier = req.headers['x-staff-identifier'] || req.body.staffIdentifier || 'Unknown';
 
     if (!['pending', 'accepted', 'rejected', 'completed'].includes(status)) {
       return res.status(400).json({ error: 'Invalid status' });
@@ -2442,13 +2648,28 @@ app.post('/api/trade-in/:id/update-status', async (req, res) => {
         return res.status(404).json({ error: 'Submission not found' });
       }
       
+      const oldStatus = submission.status;
       submission.status = status;
       submission.updatedAt = new Date().toISOString();
+      submission.lastEditedBy = staffIdentifier;
       if (notes) {
         submission.adminNotes = notes;
       }
       
       await saveSubmissions();
+      
+      // Log audit trail
+      const changes = [{ field: 'status', old: oldStatus, new: status }];
+      if (notes) {
+        changes.push({ field: 'adminNotes', old: submission.adminNotes || 'null', new: notes });
+      }
+      await logAudit({
+        action: 'update_status',
+        resourceType: 'submission',
+        resourceId: id.toString(),
+        staffIdentifier: staffIdentifier,
+        changes: changes
+      });
     }
 
     // Send email to customer about status change
@@ -2496,6 +2717,7 @@ app.post('/api/trade-in/:id/issue-credit', async (req, res) => {
     }
 
     const id = parseInt(req.params.id);
+    const staffIdentifier = req.headers['x-staff-identifier'] || req.body.staffIdentifier || 'Unknown';
     let submission = null;
 
     // Ensure MongoDB connection
@@ -2756,6 +2978,7 @@ app.post('/api/trade-in/:id/issue-credit', async (req, res) => {
     submission.giftCardId = giftCard.id.toString();
     submission.status = 'completed';
     submission.updatedAt = new Date().toISOString();
+    submission.lastEditedBy = staffIdentifier;
     
     // Save to MongoDB if available
     if (db) {
@@ -2776,6 +2999,24 @@ app.post('/api/trade-in/:id/issue-credit', async (req, res) => {
     
     // Save to file as fallback
     await saveSubmissions();
+    
+    // Log audit trail
+    await logAudit({
+      action: 'issue_credit',
+      resourceType: 'submission',
+      resourceId: submission.id.toString(),
+      staffIdentifier: staffIdentifier,
+      changes: [{
+        field: 'giftCardCode',
+        old: null,
+        new: finalGiftCardCode,
+        description: `Issued gift card code: ${finalGiftCardCode} for £${submission.finalPrice.toFixed(2)}`
+      }, {
+        field: 'status',
+        old: 'accepted',
+        new: 'completed'
+      }]
+    });
 
     // Send gift card email to customer
     try {
@@ -2833,6 +3074,7 @@ app.post('/api/trade-in/:id/issue-cash-payment', async (req, res) => {
 
     const id = parseInt(req.params.id);
     const { paymentMethod } = req.body; // 'bank_transfer' or 'paypal'
+    const staffIdentifier = req.headers['x-staff-identifier'] || req.body.staffIdentifier || 'Unknown';
 
     if (!['bank_transfer', 'paypal'].includes(paymentMethod)) {
       return res.status(400).json({ error: 'Invalid payment method' });
@@ -2943,6 +3185,7 @@ app.post('/api/trade-in/:id/issue-cash-payment', async (req, res) => {
     submission.paymentDate = new Date().toISOString();
     submission.status = 'completed';
     submission.updatedAt = new Date().toISOString();
+    submission.lastEditedBy = staffIdentifier;
     
     // Save to MongoDB if available
     if (db) {
@@ -2963,6 +3206,24 @@ app.post('/api/trade-in/:id/issue-cash-payment', async (req, res) => {
     
     // Save to file as fallback
     await saveSubmissions();
+    
+    // Log audit trail
+    await logAudit({
+      action: 'issue_payment',
+      resourceType: 'submission',
+      resourceId: submission.id.toString(),
+      staffIdentifier: staffIdentifier,
+      changes: [{
+        field: 'paymentReference',
+        old: null,
+        new: paymentReference,
+        description: `Issued ${paymentMethod} payment: ${paymentReference} for £${submission.finalPrice.toFixed(2)}`
+      }, {
+        field: 'status',
+        old: 'accepted',
+        new: 'completed'
+      }]
+    });
 
     // Send payment email to customer
     try {
