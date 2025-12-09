@@ -1669,12 +1669,18 @@ async function logAudit({ action, resourceType, resourceId, staffIdentifier, cha
   }
 }
 
-// Get audit logs (admin)
+// Get audit logs (admin only)
 app.get('/api/audit-logs', async (req, res) => {
   try {
     const authHeader = req.headers['x-api-key'];
     if (authHeader !== API_SECRET) {
       return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    // Verify admin access
+    const staffEmail = req.headers['x-staff-identifier'];
+    if (!await verifyAdminAccess(staffEmail)) {
+      return res.status(403).json({ error: 'Admin access required. Only admin and manager roles can view audit logs.' });
     }
 
     await ensureMongoConnection();
@@ -1711,12 +1717,106 @@ app.get('/api/audit-logs', async (req, res) => {
 // STAFF MANAGEMENT SYSTEM
 // ============================================
 
-// Get all staff members (admin)
+// Helper function to verify admin access
+async function verifyAdminAccess(staffEmail) {
+  if (!staffEmail || staffEmail === 'Unknown') {
+    return false;
+  }
+
+  try {
+    await ensureMongoConnection();
+    if (!db) {
+      return false;
+    }
+
+    // Check if any admins exist (bootstrap mode)
+    const adminCount = await db.collection('staff_members').countDocuments({ 
+      role: { $in: ['admin', 'manager'] },
+      active: true 
+    });
+
+    // If no admins exist, allow first-time setup
+    if (adminCount === 0) {
+      console.log('⚠️ No admins found - allowing bootstrap access');
+      return true;
+    }
+
+    const staff = await db.collection('staff_members').findOne({ 
+      email: staffEmail.trim().toLowerCase(),
+      active: true 
+    });
+
+    if (!staff) {
+      return false;
+    }
+
+    // Only admin and manager roles can access admin pages
+    return staff.role === 'admin' || staff.role === 'manager';
+  } catch (error) {
+    console.error('Error verifying admin access:', error);
+    return false;
+  }
+}
+
+// Verify staff admin access
+app.get('/api/staff/verify-admin', async (req, res) => {
+  try {
+    const authHeader = req.headers['x-api-key'];
+    if (authHeader !== API_SECRET) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    await ensureMongoConnection();
+    if (!db) {
+      return res.status(500).json({ error: 'Database connection failed' });
+    }
+
+    const staffEmail = req.headers['x-staff-identifier'] || req.query.email;
+    if (!staffEmail) {
+      return res.status(400).json({ error: 'Staff email required' });
+    }
+
+    const staff = await db.collection('staff_members').findOne({ 
+      email: staffEmail.trim().toLowerCase(),
+      active: true 
+    });
+
+    if (!staff) {
+      return res.json({
+        success: true,
+        isAdmin: false,
+        message: 'Staff member not found or inactive'
+      });
+    }
+
+    // Check if staff has admin role
+    const isAdmin = staff.role === 'admin' || staff.role === 'manager';
+    
+    res.json({
+      success: true,
+      isAdmin: isAdmin,
+      role: staff.role,
+      permissions: staff.permissions
+    });
+
+  } catch (error) {
+    console.error('Error verifying admin access:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get all staff members (admin only)
 app.get('/api/staff', async (req, res) => {
   try {
     const authHeader = req.headers['x-api-key'];
     if (authHeader !== API_SECRET) {
       return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    // Verify admin access
+    const staffEmail = req.headers['x-staff-identifier'];
+    if (!await verifyAdminAccess(staffEmail)) {
+      return res.status(403).json({ error: 'Admin access required. Only admin and manager roles can access staff management.' });
     }
 
     await ensureMongoConnection();
@@ -1741,7 +1841,7 @@ app.get('/api/staff', async (req, res) => {
   }
 });
 
-// Add new staff member (admin)
+// Add new staff member (admin only)
 app.post('/api/staff', async (req, res) => {
   try {
     const authHeader = req.headers['x-api-key'];
@@ -1749,13 +1849,27 @@ app.post('/api/staff', async (req, res) => {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
+    const adminIdentifier = req.headers['x-staff-identifier'] || req.body.adminIdentifier || 'Unknown';
+    
     await ensureMongoConnection();
     if (!db) {
       return res.status(500).json({ error: 'Database connection failed' });
     }
 
+    // Check if any admins exist (bootstrap mode)
+    const adminCount = await db.collection('staff_members').countDocuments({ 
+      role: { $in: ['admin', 'manager'] },
+      active: true 
+    });
+
+    // If admins exist, verify admin access
+    if (adminCount > 0) {
+      if (!await verifyAdminAccess(adminIdentifier)) {
+        return res.status(403).json({ error: 'Admin access required. Only admin and manager roles can manage staff.' });
+      }
+    }
+
     const { email, name, role, permissions, active = true } = req.body;
-    const adminIdentifier = req.headers['x-staff-identifier'] || req.body.adminIdentifier || 'Unknown';
 
     if (!email || !email.trim()) {
       return res.status(400).json({ error: 'Email is required' });
@@ -1767,10 +1881,13 @@ app.post('/api/staff', async (req, res) => {
       return res.status(400).json({ error: 'Staff member with this email already exists' });
     }
 
+    // If this is the first admin being created, ensure role is admin
+    const finalRole = (adminCount === 0 && role !== 'staff') ? 'admin' : (role || 'staff');
+
     const staffMember = {
       email: email.trim().toLowerCase(),
       name: name || email.trim(),
-      role: role || 'staff',
+      role: finalRole,
       permissions: permissions || {
         pricing: true,
         tradeIn: true,
@@ -1784,26 +1901,29 @@ app.post('/api/staff', async (req, res) => {
 
     const result = await db.collection('staff_members').insertOne(staffMember);
 
-    // Log audit trail
-    await logAudit({
-      action: 'add_staff',
-      resourceType: 'staff',
-      resourceId: result.insertedId.toString(),
-      staffIdentifier: adminIdentifier,
-      changes: [{
-        field: 'status',
-        old: null,
-        new: 'added',
-        description: `Added staff member: ${staffMember.email} (${staffMember.role})`
-      }]
-    });
+    // Log audit trail (skip if bootstrap mode)
+    if (adminCount > 0) {
+      await logAudit({
+        action: 'add_staff',
+        resourceType: 'staff',
+        resourceId: result.insertedId.toString(),
+        staffIdentifier: adminIdentifier,
+        changes: [{
+          field: 'status',
+          old: null,
+          new: 'added',
+          description: `Added staff member: ${staffMember.email} (${staffMember.role})`
+        }]
+      });
+    }
 
     res.json({
       success: true,
       staff: {
         _id: result.insertedId.toString(),
         ...staffMember
-      }
+      },
+      isFirstAdmin: adminCount === 0
     });
 
   } catch (error) {
@@ -1812,12 +1932,19 @@ app.post('/api/staff', async (req, res) => {
   }
 });
 
-// Update staff member (admin)
+// Update staff member (admin only)
 app.put('/api/staff/:id', async (req, res) => {
   try {
     const authHeader = req.headers['x-api-key'];
     if (authHeader !== API_SECRET) {
       return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const adminIdentifier = req.headers['x-staff-identifier'] || req.body.adminIdentifier || 'Unknown';
+    
+    // Verify admin access
+    if (!await verifyAdminAccess(adminIdentifier)) {
+      return res.status(403).json({ error: 'Admin access required. Only admin and manager roles can manage staff.' });
     }
 
     await ensureMongoConnection();
@@ -1827,7 +1954,6 @@ app.put('/api/staff/:id', async (req, res) => {
 
     const { id } = req.params;
     const { name, role, permissions, active } = req.body;
-    const adminIdentifier = req.headers['x-staff-identifier'] || req.body.adminIdentifier || 'Unknown';
 
     // Get old staff member for audit
     const oldStaff = await db.collection('staff_members').findOne({ _id: new ObjectId(id) });
@@ -1881,12 +2007,19 @@ app.put('/api/staff/:id', async (req, res) => {
   }
 });
 
-// Delete staff member (admin)
+// Delete staff member (admin only)
 app.delete('/api/staff/:id', async (req, res) => {
   try {
     const authHeader = req.headers['x-api-key'];
     if (authHeader !== API_SECRET) {
       return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const adminIdentifier = req.headers['x-staff-identifier'] || req.body.adminIdentifier || 'Unknown';
+    
+    // Verify admin access
+    if (!await verifyAdminAccess(adminIdentifier)) {
+      return res.status(403).json({ error: 'Admin access required. Only admin and manager roles can manage staff.' });
     }
 
     await ensureMongoConnection();
@@ -1895,7 +2028,6 @@ app.delete('/api/staff/:id', async (req, res) => {
     }
 
     const { id } = req.params;
-    const adminIdentifier = req.headers['x-staff-identifier'] || req.body.adminIdentifier || 'Unknown';
 
     // Get staff member before deletion for audit
     const staff = await db.collection('staff_members').findOne({ _id: new ObjectId(id) });
