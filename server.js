@@ -1699,10 +1699,10 @@ app.get('/api/audit-logs', async (req, res) => {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    // Verify admin access
+    // Check permission
     const staffEmail = req.headers['x-staff-identifier'];
-    if (!await verifyAdminAccess(staffEmail)) {
-      return res.status(403).json({ error: 'Admin access required. Only admin and manager roles can view audit logs.' });
+    if (!await hasPermission(staffEmail, 'auditView')) {
+      return res.status(403).json({ error: 'Permission denied. You need "auditView" permission to view audit logs.' });
     }
 
     await ensureMongoConnection();
@@ -2111,10 +2111,10 @@ app.get('/api/staff', async (req, res) => {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    // Verify admin access
+    // Check permission
     const staffEmail = req.headers['x-staff-identifier'];
-    if (!await verifyAdminAccess(staffEmail)) {
-      return res.status(403).json({ error: 'Admin access required. Only admin and manager roles can access staff management.' });
+    if (!await hasPermission(staffEmail, 'staffView')) {
+      return res.status(403).json({ error: 'Permission denied. You need "staffView" permission to view staff members.' });
     }
 
     await ensureMongoConnection();
@@ -2160,10 +2160,10 @@ app.post('/api/staff', async (req, res) => {
       active: true 
     });
 
-    // If admins exist, verify admin access
+    // If admins exist, check permission
     if (adminCount > 0) {
-      if (!await verifyAdminAccess(adminIdentifier)) {
-        return res.status(403).json({ error: 'Admin access required. Only admin and manager roles can manage staff.' });
+      if (!await hasPermission(adminIdentifier, 'staffEdit')) {
+        return res.status(403).json({ error: 'Permission denied. You need "staffEdit" permission to add staff members.' });
       }
     }
 
@@ -2240,9 +2240,9 @@ app.put('/api/staff/:id', async (req, res) => {
 
     const adminIdentifier = req.headers['x-staff-identifier'] || req.body.adminIdentifier || 'Unknown';
     
-    // Verify admin access
-    if (!await verifyAdminAccess(adminIdentifier)) {
-      return res.status(403).json({ error: 'Admin access required. Only admin and manager roles can manage staff.' });
+    // Check permission
+    if (!await hasPermission(adminIdentifier, 'staffEdit')) {
+      return res.status(403).json({ error: 'Permission denied. You need "staffEdit" permission to update staff members.' });
     }
 
     await ensureMongoConnection();
@@ -2315,9 +2315,9 @@ app.delete('/api/staff/:id', async (req, res) => {
 
     const adminIdentifier = req.headers['x-staff-identifier'] || req.body.adminIdentifier || 'Unknown';
     
-    // Verify admin access
-    if (!await verifyAdminAccess(adminIdentifier)) {
-      return res.status(403).json({ error: 'Admin access required. Only admin and manager roles can manage staff.' });
+    // Check permission
+    if (!await hasPermission(adminIdentifier, 'staffEdit')) {
+      return res.status(403).json({ error: 'Permission denied. You need "staffEdit" permission to delete staff members.' });
     }
 
     await ensureMongoConnection();
