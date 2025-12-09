@@ -1707,6 +1707,231 @@ app.get('/api/audit-logs', async (req, res) => {
   }
 });
 
+// ============================================
+// STAFF MANAGEMENT SYSTEM
+// ============================================
+
+// Get all staff members (admin)
+app.get('/api/staff', async (req, res) => {
+  try {
+    const authHeader = req.headers['x-api-key'];
+    if (authHeader !== API_SECRET) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    await ensureMongoConnection();
+    if (!db) {
+      return res.status(500).json({ error: 'Database connection failed' });
+    }
+
+    const staff = await db.collection('staff_members')
+      .find({})
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.json({
+      success: true,
+      staff: staff,
+      count: staff.length
+    });
+
+  } catch (error) {
+    console.error('Error fetching staff:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Add new staff member (admin)
+app.post('/api/staff', async (req, res) => {
+  try {
+    const authHeader = req.headers['x-api-key'];
+    if (authHeader !== API_SECRET) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    await ensureMongoConnection();
+    if (!db) {
+      return res.status(500).json({ error: 'Database connection failed' });
+    }
+
+    const { email, name, role, permissions, active = true } = req.body;
+    const adminIdentifier = req.headers['x-staff-identifier'] || req.body.adminIdentifier || 'Unknown';
+
+    if (!email || !email.trim()) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    // Check if staff member already exists
+    const existing = await db.collection('staff_members').findOne({ email: email.trim().toLowerCase() });
+    if (existing) {
+      return res.status(400).json({ error: 'Staff member with this email already exists' });
+    }
+
+    const staffMember = {
+      email: email.trim().toLowerCase(),
+      name: name || email.trim(),
+      role: role || 'staff',
+      permissions: permissions || {
+        pricing: true,
+        tradeIn: true,
+        readOnly: false
+      },
+      active: active !== false,
+      createdAt: new Date().toISOString(),
+      createdBy: adminIdentifier,
+      updatedAt: new Date().toISOString()
+    };
+
+    const result = await db.collection('staff_members').insertOne(staffMember);
+
+    // Log audit trail
+    await logAudit({
+      action: 'add_staff',
+      resourceType: 'staff',
+      resourceId: result.insertedId.toString(),
+      staffIdentifier: adminIdentifier,
+      changes: [{
+        field: 'status',
+        old: null,
+        new: 'added',
+        description: `Added staff member: ${staffMember.email} (${staffMember.role})`
+      }]
+    });
+
+    res.json({
+      success: true,
+      staff: {
+        _id: result.insertedId.toString(),
+        ...staffMember
+      }
+    });
+
+  } catch (error) {
+    console.error('Error adding staff:', error);
+    res.status(500).json({ error: 'Internal server error', message: error.message });
+  }
+});
+
+// Update staff member (admin)
+app.put('/api/staff/:id', async (req, res) => {
+  try {
+    const authHeader = req.headers['x-api-key'];
+    if (authHeader !== API_SECRET) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    await ensureMongoConnection();
+    if (!db) {
+      return res.status(500).json({ error: 'Database connection failed' });
+    }
+
+    const { id } = req.params;
+    const { name, role, permissions, active } = req.body;
+    const adminIdentifier = req.headers['x-staff-identifier'] || req.body.adminIdentifier || 'Unknown';
+
+    // Get old staff member for audit
+    const oldStaff = await db.collection('staff_members').findOne({ _id: new ObjectId(id) });
+    if (!oldStaff) {
+      return res.status(404).json({ error: 'Staff member not found' });
+    }
+
+    const updateData = {
+      updatedAt: new Date().toISOString(),
+      updatedBy: adminIdentifier
+    };
+
+    if (name !== undefined) updateData.name = name;
+    if (role !== undefined) updateData.role = role;
+    if (permissions !== undefined) updateData.permissions = permissions;
+    if (active !== undefined) updateData.active = active;
+
+    const result = await db.collection('staff_members').updateOne(
+      { _id: new ObjectId(id) },
+      { $set: updateData }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ error: 'Staff member not found' });
+    }
+
+    // Log audit trail
+    const changes = [];
+    if (name !== undefined && name !== oldStaff.name) changes.push({ field: 'name', old: oldStaff.name, new: name });
+    if (role !== undefined && role !== oldStaff.role) changes.push({ field: 'role', old: oldStaff.role, new: role });
+    if (active !== undefined && active !== oldStaff.active) changes.push({ field: 'active', old: oldStaff.active, new: active });
+    
+    if (changes.length > 0) {
+      await logAudit({
+        action: 'update_staff',
+        resourceType: 'staff',
+        resourceId: id,
+        staffIdentifier: adminIdentifier,
+        changes: changes
+      });
+    }
+
+    res.json({
+      success: true,
+      updated: result.modifiedCount > 0
+    });
+
+  } catch (error) {
+    console.error('Error updating staff:', error);
+    res.status(500).json({ error: 'Internal server error', message: error.message });
+  }
+});
+
+// Delete staff member (admin)
+app.delete('/api/staff/:id', async (req, res) => {
+  try {
+    const authHeader = req.headers['x-api-key'];
+    if (authHeader !== API_SECRET) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    await ensureMongoConnection();
+    if (!db) {
+      return res.status(500).json({ error: 'Database connection failed' });
+    }
+
+    const { id } = req.params;
+    const adminIdentifier = req.headers['x-staff-identifier'] || req.body.adminIdentifier || 'Unknown';
+
+    // Get staff member before deletion for audit
+    const staff = await db.collection('staff_members').findOne({ _id: new ObjectId(id) });
+    if (!staff) {
+      return res.status(404).json({ error: 'Staff member not found' });
+    }
+
+    const result = await db.collection('staff_members').deleteOne({ _id: new ObjectId(id) });
+
+    // Log audit trail
+    if (result.deletedCount > 0) {
+      await logAudit({
+        action: 'delete_staff',
+        resourceType: 'staff',
+        resourceId: id,
+        staffIdentifier: adminIdentifier,
+        changes: [{
+          field: 'status',
+          old: 'active',
+          new: 'deleted',
+          description: `Deleted staff member: ${staff.email}`
+        }]
+      });
+    }
+
+    res.json({
+      success: true,
+      deleted: result.deletedCount > 0
+    });
+
+  } catch (error) {
+    console.error('Error deleting staff:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Import Excel file (admin)
 app.post('/api/products/import-excel', async (req, res) => {
   try {
