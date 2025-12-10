@@ -2574,19 +2574,29 @@ app.post('/api/products/import-excel', async (req, res) => {
     console.log('📋 Column condition by index:', columnConditionByIndex);
     
     // Read data starting from row after sub-header row
+    // IMPORTANT: Store data by column index, not by column name, because multiple columns
+    // can have the same name (e.g., "128GB" appears under EXCELLENT, GOOD, and FAIR)
     const dataStartRow = subHeaderRowIndex !== -1 ? subHeaderRowIndex + 1 : mainHeaderRowIndex + 1;
     const allRows = [];
     for (let row = dataStartRow; row <= range.e.r; row++) {
       const rowData = {};
+      const rowDataByIndex = {}; // Store values by column index for accurate retrieval
       for (let col = range.s.c; col <= range.e.c; col++) {
+        const colIdx = col - range.s.c;
         const cellAddress = XLSX.utils.encode_cell({ r: row, c: col });
         const cell = worksheet[cellAddress];
         const value = cell ? (cell.v !== undefined ? String(cell.v).trim() : '') : '';
-        const headerName = columnMapping[col - range.s.c] || `__EMPTY_${col}`;
+        const headerName = columnMapping[colIdx] || `__EMPTY_${colIdx}`;
+        
+        // Store by header name (for non-storage columns like DEVICE, BRAND, MODEL)
         rowData[headerName] = value;
+        // Store by column index (for storage columns that have duplicate names)
+        rowDataByIndex[colIdx] = value;
       }
+      // Attach the index-based data to the row object
+      rowData._byIndex = rowDataByIndex;
       // Only add non-empty rows
-      if (Object.values(rowData).some(v => v && v !== '')) {
+      if (Object.values(rowData).some(v => v && v !== '' && v !== rowDataByIndex)) {
         allRows.push(rowData);
       }
     }
@@ -2744,17 +2754,24 @@ app.post('/api/products/import-excel', async (req, res) => {
           });
           
           // For each matching column index, check its condition and extract price
+          // CRITICAL: Read value by column index, not by column name, because the same
+          // storage name (e.g., "128GB") appears multiple times under different conditions
           for (const colIdx of matchingIndices) {
             const condition = columnConditionByIndex[colIdx];
             const colName = columnMapping[colIdx];
             
+            // Read value directly from column index to avoid overwriting issues
+            const cellValue = row._byIndex && row._byIndex[colIdx] !== undefined 
+              ? row._byIndex[colIdx] 
+              : row[colName];
+            
             // Debug logging for first row, first storage
             if (storage === '64GB' && i === 0) {
-              console.log(`🔍 Column ${colIdx} (${colName}): condition=${condition}, value="${row[colName]}"`);
+              console.log(`🔍 Column ${colIdx} (${colName}): condition=${condition}, value="${cellValue}"`);
             }
             
-            if (condition && row[colName] !== undefined && row[colName] !== null && row[colName] !== '') {
-              const val = parseFloat(row[colName]);
+            if (condition && cellValue !== undefined && cellValue !== null && cellValue !== '') {
+              const val = parseFloat(cellValue);
               if (!isNaN(val) && val > 0) {
                 // Map condition to price object key (only set if not already set)
                 if (condition === 'Excellent' && prices.Excellent === null) {
