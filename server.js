@@ -4648,7 +4648,14 @@ app.post('/api/backup/create', async (req, res) => {
           metaobjectsCount: backupData.shopify.metaobjectsCount || 0,
           blogsCount: backupData.shopify.blogsCount || 0,
           filesCount: backupData.shopify.filesCount || 0,
-          hasErrors: !!(backupData.shopify.productsError || backupData.shopify.themesError || backupData.shopify.scriptTagsError || backupData.shopify.metaobjectsError || backupData.shopify.blogsError || backupData.shopify.filesError)
+          hasErrors: !!(backupData.shopify.productsError || backupData.shopify.themesError || backupData.shopify.scriptTagsError || backupData.shopify.metaobjectsError || backupData.shopify.blogsError || backupData.shopify.filesError),
+          productsError: backupData.shopify.productsError || null,
+          themesError: backupData.shopify.themesError || null,
+          scriptTagsError: backupData.shopify.scriptTagsError || null,
+          metaobjectsError: backupData.shopify.metaobjectsError || null,
+          blogsError: backupData.shopify.blogsError || null,
+          filesError: backupData.shopify.filesError || null,
+          backedUpAt: backupData.shopify.backedUpAt || null
         } : null
       }
     });
@@ -4710,7 +4717,14 @@ app.get('/api/backup/list', async (req, res) => {
         metaobjectsCount: backup.shopify.metaobjectsCount || 0,
         blogsCount: backup.shopify.blogsCount || 0,
         filesCount: backup.shopify.filesCount || 0,
-        hasErrors: !!(backup.shopify.productsError || backup.shopify.themesError || backup.shopify.scriptTagsError || backup.shopify.metaobjectsError || backup.shopify.blogsError || backup.shopify.filesError)
+        hasErrors: !!(backup.shopify.productsError || backup.shopify.themesError || backup.shopify.scriptTagsError || backup.shopify.metaobjectsError || backup.shopify.blogsError || backup.shopify.filesError),
+        productsError: backup.shopify.productsError || null,
+        themesError: backup.shopify.themesError || null,
+        scriptTagsError: backup.shopify.scriptTagsError || null,
+        metaobjectsError: backup.shopify.metaobjectsError || null,
+        blogsError: backup.shopify.blogsError || null,
+        filesError: backup.shopify.filesError || null,
+        backedUpAt: backup.shopify.backedUpAt || null
       } : null
     }));
 
