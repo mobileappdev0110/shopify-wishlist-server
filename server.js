@@ -4291,12 +4291,26 @@ async function fetchShopifyScriptTags() {
     );
 
     if (!response.ok) {
-      // If 401 or 403, likely missing scope - return empty array instead of error
-      if (response.status === 401 || response.status === 403) {
-        console.warn('⚠️ Script tags backup skipped: Missing read_script_tags scope or invalid token');
-        return { scriptTags: [], count: 0, error: 'Missing read_script_tags scope' };
+      // Get error details from response
+      let errorMessage = `Shopify API error: ${response.status} ${response.statusText}`;
+      try {
+        const errorData = await response.json();
+        if (errorData.errors) {
+          errorMessage += ` - ${JSON.stringify(errorData.errors)}`;
+        } else if (errorData.error) {
+          errorMessage += ` - ${errorData.error}`;
+        }
+      } catch (e) {
+        // If response is not JSON, use status text
       }
-      throw new Error(`Shopify API error: ${response.status} ${response.statusText}`);
+      
+      // If 401 or 403, log detailed error but continue backup
+      if (response.status === 401 || response.status === 403) {
+        console.warn('⚠️ Script tags backup failed:', errorMessage);
+        console.warn('⚠️ Check: 1) Access token is valid, 2) read_script_tags scope is granted, 3) Token has not expired');
+        return { scriptTags: [], count: 0, error: errorMessage };
+      }
+      throw new Error(errorMessage);
     }
 
     const data = await response.json();
