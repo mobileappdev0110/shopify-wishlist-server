@@ -4291,6 +4291,11 @@ async function fetchShopifyScriptTags() {
     );
 
     if (!response.ok) {
+      // If 401 or 403, likely missing scope - return empty array instead of error
+      if (response.status === 401 || response.status === 403) {
+        console.warn('⚠️ Script tags backup skipped: Missing read_script_tags scope or invalid token');
+        return { scriptTags: [], count: 0, error: 'Missing read_script_tags scope' };
+      }
       throw new Error(`Shopify API error: ${response.status} ${response.statusText}`);
     }
 
@@ -4298,6 +4303,7 @@ async function fetchShopifyScriptTags() {
     return { scriptTags: data.script_tags || [], count: (data.script_tags || []).length };
   } catch (error) {
     console.error('Error fetching Shopify script tags:', error);
+    // Return empty array instead of failing the entire backup
     return { error: error.message, scriptTags: [], count: 0 };
   }
 }
@@ -4725,6 +4731,12 @@ app.get('/api/backup/:id', async (req, res) => {
     }
 
     const { id } = req.params;
+    
+    // Validate ObjectId format
+    if (!id || id.length !== 24 || !/^[0-9a-fA-F]{24}$/.test(id)) {
+      return res.status(400).json({ error: 'Invalid backup ID format' });
+    }
+    
     const backup = await db.collection('backups').findOne({ _id: new ObjectId(id) });
 
     if (!backup) {
@@ -4738,7 +4750,7 @@ app.get('/api/backup/:id', async (req, res) => {
 
   } catch (error) {
     console.error('Error fetching backup:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Internal server error', message: error.message });
   }
 });
 
@@ -4764,6 +4776,11 @@ app.post('/api/backup/restore', async (req, res) => {
 
     if (!backupId) {
       return res.status(400).json({ error: 'Backup ID is required' });
+    }
+
+    // Validate ObjectId format
+    if (backupId.length !== 24 || !/^[0-9a-fA-F]{24}$/.test(backupId)) {
+      return res.status(400).json({ error: 'Invalid backup ID format' });
     }
 
     // Get backup
@@ -4883,6 +4900,12 @@ app.delete('/api/backup/:id', async (req, res) => {
     }
 
     const { id } = req.params;
+    
+    // Validate ObjectId format
+    if (!id || id.length !== 24 || !/^[0-9a-fA-F]{24}$/.test(id)) {
+      return res.status(400).json({ error: 'Invalid backup ID format' });
+    }
+    
     const backup = await db.collection('backups').findOne({ _id: new ObjectId(id) });
 
     if (!backup) {
