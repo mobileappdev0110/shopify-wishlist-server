@@ -520,6 +520,36 @@ app.get('/api/wishlist/get', async (req, res) => {
 });
 
 // ============================================
+// HELPER FUNCTIONS
+// ============================================
+
+// Generate SEO-friendly slug from product data
+function generateProductSlug(brand, model, storage, color = null) {
+  // Combine brand, model, storage (and optionally color) into a slug
+  const parts = [
+    brand,
+    model,
+    storage
+  ];
+  
+  // Add color if specified and not "Default"
+  if (color && color.toLowerCase() !== 'default' && color.trim() !== '') {
+    parts.push(color);
+  }
+  
+  // Join and create slug: lowercase, replace spaces/special chars with hyphens, remove duplicates
+  const slug = parts
+    .filter(p => p && p.trim() !== '')
+    .map(p => p.trim().toLowerCase())
+    .join('-')
+    .replace(/[^a-z0-9-]/g, '-') // Replace non-alphanumeric with hyphens
+    .replace(/-+/g, '-') // Replace multiple hyphens with single hyphen
+    .replace(/^-|-$/g, ''); // Remove leading/trailing hyphens
+  
+  return slug;
+}
+
+// ============================================
 // TRADE-IN PRICING ENDPOINTS
 // ============================================
 
@@ -1419,6 +1449,135 @@ app.get('/api/products/admin', async (req, res) => {
   }
 });
 
+// Get product by slug (for SEO-friendly URLs)
+app.get('/api/products/by-slug/:slug', async (req, res) => {
+  try {
+    await ensureMongoConnection();
+    if (!db) {
+      return res.status(500).json({ error: 'Database connection failed' });
+    }
+
+    const { slug } = req.params;
+    
+    // Find product by slug
+    const product = await db.collection('trade_in_products').findOne({ slug: slug });
+    
+    if (!product) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+
+    // Transform to match frontend expected format
+    const imageUrl = product.imageUrl || getDefaultImageUrl(product.deviceType);
+    const productImage = {
+      url: imageUrl,
+      altText: product.brand + ' ' + product.model,
+      width: 800,
+      height: 800
+    };
+
+    const variantGid = 'gid://database/Variant/' + product._id + '_' + product.storage + '_' + (product.color || 'default');
+    const variant = {
+      id: variantGid,
+      gid: variantGid,
+      title: product.storage + (product.color ? ' - ' + product.color : ''),
+      price: product.prices?.Excellent || 0,
+      availableForSale: true,
+      image: productImage,
+      options: {
+        storage: product.storage,
+        color: product.color || 'Default'
+      },
+      _productData: product // Include full product data with slug
+    };
+
+    const transformedProduct = {
+      id: product._id.toString(),
+      gid: 'gid://database/Product/' + product._id,
+      title: product.model,
+      handle: (product.brand + '-' + product.model).toLowerCase().replace(/\s+/g, '-'),
+      vendor: product.brand,
+      tags: [product.deviceType || 'phone', 'trade-in'],
+      featuredImage: productImage,
+      images: [productImage],
+      variants: [variant],
+      slug: product.slug,
+      prices: product.prices || {}
+    };
+
+    res.json({
+      success: true,
+      product: transformedProduct
+    });
+  } catch (error) {
+    console.error('Error fetching product by slug:', error);
+    res.status(500).json({ error: 'Internal server error', message: error.message });
+  }
+});
+
+// Generate slugs for existing products (migration endpoint)
+app.post('/api/products/generate-slugs', async (req, res) => {
+  try {
+    const authHeader = req.headers['x-api-key'];
+    if (authHeader !== API_SECRET) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    await ensureMongoConnection();
+    if (!db) {
+      return res.status(500).json({ error: 'Database connection failed' });
+    }
+
+    // Get all products without slugs
+    const products = await db.collection('trade_in_products').find({
+      $or: [
+        { slug: { $exists: false } },
+        { slug: null },
+        { slug: '' }
+      ]
+    }).toArray();
+
+    let updated = 0;
+    let skipped = 0;
+
+    for (const product of products) {
+      // Generate slug
+      const slug = generateProductSlug(product.brand, product.model, product.storage, product.color);
+      
+      // Check for duplicates
+      const existing = await db.collection('trade_in_products').findOne({ 
+        slug: slug,
+        _id: { $ne: product._id }
+      });
+      
+      if (existing) {
+        // If duplicate, append product ID to make it unique
+        const uniqueSlug = slug + '-' + product._id.toString().substring(0, 8);
+        await db.collection('trade_in_products').updateOne(
+          { _id: product._id },
+          { $set: { slug: uniqueSlug } }
+        );
+        updated++;
+      } else {
+        await db.collection('trade_in_products').updateOne(
+          { _id: product._id },
+          { $set: { slug: slug } }
+        );
+        updated++;
+      }
+    }
+
+    res.json({
+      success: true,
+      message: 'Generated slugs for ' + updated + ' products',
+      updated: updated,
+      skipped: skipped
+    });
+  } catch (error) {
+    console.error('Error generating slugs:', error);
+    res.status(500).json({ error: 'Internal server error', message: error.message });
+  }
+});
+
 // Create or update product (admin)
 app.post('/api/products/admin', async (req, res) => {
   try {
@@ -1448,6 +1607,9 @@ app.post('/api/products/admin', async (req, res) => {
       });
     }
     
+    // Generate SEO-friendly slug
+    const slug = generateProductSlug(brand, model, storage, color);
+    
     const productData = {
       brand: brand.trim(),
       model: model.trim(),
@@ -1456,6 +1618,7 @@ app.post('/api/products/admin', async (req, res) => {
       deviceType: deviceType.toLowerCase(),
       imageUrl: imageUrl || null,
       prices: prices || {}, // { Excellent: 500, Good: 400, Fair: 300, Faulty: null }
+      slug: slug, // SEO-friendly URL slug
       updatedAt: new Date().toISOString(),
       lastEditedBy: staffIdentifier
     };
@@ -1563,6 +1726,9 @@ app.put('/api/products/admin/:id', async (req, res) => {
       return res.status(404).json({ error: 'Product not found' });
     }
 
+    // Generate SEO-friendly slug
+    const slug = generateProductSlug(brand, model, storage, color);
+    
     const productData = {
       brand: brand.trim(),
       model: model.trim(),
@@ -1571,6 +1737,7 @@ app.put('/api/products/admin/:id', async (req, res) => {
       deviceType: deviceType.toLowerCase(),
       imageUrl: imageUrl || null,
       prices: prices || {},
+      slug: slug, // SEO-friendly URL slug
       updatedAt: new Date().toISOString(),
       lastEditedBy: staffIdentifier
     };
@@ -2929,6 +3096,9 @@ app.post('/api/products/import-excel', async (req, res) => {
             deviceType: deviceType
           });
 
+          // Generate SEO-friendly slug
+          const slug = generateProductSlug(brand.trim(), model.trim(), storage, color ? color.trim() : null);
+          
           const productData = {
             brand: brand.trim(),
             model: model.trim(),
@@ -2937,6 +3107,7 @@ app.post('/api/products/import-excel', async (req, res) => {
             deviceType: deviceType,
             imageUrl: imageUrl ? imageUrl.trim() : null, // Ensure imageUrl is trimmed
             prices: prices,
+            slug: slug, // SEO-friendly URL slug
             updatedAt: new Date().toISOString()
           };
           
