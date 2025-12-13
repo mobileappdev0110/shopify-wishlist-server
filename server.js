@@ -3442,6 +3442,127 @@ app.post('/api/trade-in/submit', async (req, res) => {
   }
 });
 
+// Get admin dashboard statistics
+app.get('/api/admin/dashboard', async (req, res) => {
+  try {
+    const authHeader = req.headers['x-api-key'];
+    if (authHeader !== API_SECRET) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    await ensureMongoConnection();
+    if (!db) {
+      return res.status(500).json({ error: 'Database connection failed' });
+    }
+
+    const { startDate, endDate } = req.query;
+    
+    // Build date filter if provided
+    const dateFilter = {};
+    if (startDate || endDate) {
+      dateFilter.createdAt = {};
+      if (startDate) {
+        dateFilter.createdAt.$gte = new Date(startDate);
+      }
+      if (endDate) {
+        dateFilter.createdAt.$lte = new Date(endDate);
+      }
+    }
+
+    // Get product counts by device type
+    const deviceTypes = ['phone', 'tablet', 'laptop', 'gaming', 'watch'];
+    const productCounts = {};
+    for (const deviceType of deviceTypes) {
+      const count = await db.collection('trade_in_products').countDocuments({ deviceType: deviceType });
+      productCounts[deviceType] = count;
+    }
+
+    // Get total products
+    const totalProducts = await db.collection('trade_in_products').countDocuments({});
+
+    // Get staff count
+    const staffCount = await db.collection('staff_members').countDocuments({});
+
+    // Get submission statistics
+    const allSubmissionsQuery = dateFilter.createdAt ? { createdAt: dateFilter.createdAt } : {};
+    const totalSubmissions = await db.collection('submissions').countDocuments(allSubmissionsQuery);
+    
+    // Get submissions by status
+    const pendingSubmissions = await db.collection('submissions').countDocuments({ ...allSubmissionsQuery, status: 'pending' });
+    const acceptedSubmissions = await db.collection('submissions').countDocuments({ ...allSubmissionsQuery, status: 'accepted' });
+    const completedSubmissions = await db.collection('submissions').countDocuments({ ...allSubmissionsQuery, status: 'completed' });
+    const rejectedSubmissions = await db.collection('submissions').countDocuments({ ...allSubmissionsQuery, status: 'rejected' });
+
+    // Get submissions that need payment (accepted but not completed)
+    const needsPayment = await db.collection('submissions').countDocuments({ 
+      ...allSubmissionsQuery,
+      status: { $in: ['accepted', 'pending'] },
+      paymentStatus: { $ne: 'paid' }
+    });
+
+    // Calculate total money spent (sum of all paid amounts)
+    const paidSubmissions = await db.collection('submissions').find({
+      ...allSubmissionsQuery,
+      paymentStatus: 'paid',
+      finalPrice: { $exists: true, $ne: null }
+    }).toArray();
+    
+    const totalMoneySpent = paidSubmissions.reduce((sum, sub) => {
+      const price = parseFloat(sub.finalPrice) || 0;
+      return sum + price;
+    }, 0);
+
+    // Calculate total money pending (sum of accepted/pending submissions)
+    const pendingPaymentSubmissions = await db.collection('submissions').find({
+      ...allSubmissionsQuery,
+      status: { $in: ['accepted', 'pending'] },
+      paymentStatus: { $ne: 'paid' },
+      finalPrice: { $exists: true, $ne: null }
+    }).toArray();
+    
+    const totalMoneyPending = pendingPaymentSubmissions.reduce((sum, sub) => {
+      const price = parseFloat(sub.finalPrice) || 0;
+      return sum + price;
+    }, 0);
+
+    // Get recent activity (last 7 days)
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    const recentSubmissions = await db.collection('submissions').countDocuments({
+      createdAt: { $gte: sevenDaysAgo }
+    });
+
+    res.json({
+      success: true,
+      stats: {
+        products: {
+          total: totalProducts,
+          byType: productCounts
+        },
+        staff: {
+          total: staffCount
+        },
+        submissions: {
+          total: totalSubmissions,
+          pending: pendingSubmissions,
+          accepted: acceptedSubmissions,
+          completed: completedSubmissions,
+          rejected: rejectedSubmissions,
+          needsPayment: needsPayment,
+          recent: recentSubmissions
+        },
+        payments: {
+          totalSpent: totalMoneySpent,
+          totalPending: totalMoneyPending
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching dashboard statistics:', error);
+    res.status(500).json({ error: 'Internal server error', message: error.message });
+  }
+});
+
 // List all trade-in submissions (admin)
 app.get('/api/trade-in/list', async (req, res) => {
   try {
