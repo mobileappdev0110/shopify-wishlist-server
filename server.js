@@ -1376,13 +1376,16 @@ app.get('/api/products/trade-in', async (req, res) => {
         }
       }
 
-      // Add variant (storage + color combination)
+      // Add variant (one per storage size, with all colors in options)
       // Use full gid format for both id and gid to ensure consistency
-      const variantGid = `gid://database/Variant/${product._id}_${product.storage}_${product.color || 'default'}`;
+      // Support both new colors array and old single color field
+      const productColors = product.colors || (product.color ? [product.color] : []);
+      const firstColor = productColors.length > 0 ? productColors[0] : 'default';
+      const variantGid = `gid://database/Variant/${product._id}_${product.storage}_${firstColor}`;
       const variant = {
         id: variantGid, // Use full gid format for id as well
         gid: variantGid,
-        title: `${product.storage}${product.color ? ` - ${product.color}` : ''}`,
+        title: product.storage,
         price: product.prices?.Excellent || product.basePrice || 0, // Use Excellent as base or fallback
         availableForSale: true,
         image: {
@@ -1391,7 +1394,8 @@ app.get('/api/products/trade-in', async (req, res) => {
         },
         options: {
           storage: product.storage,
-          color: product.color || 'Default'
+          colors: productColors.length > 0 ? productColors : ['Default'], // Store all colors as array
+          color: firstColor // Keep for backward compatibility
         },
         // Store full product data for pricing calculation
         _productData: product
@@ -1663,7 +1667,7 @@ app.post('/api/products/admin', async (req, res) => {
       return res.status(500).json({ error: 'Database connection failed' });
     }
 
-    const { id, brand, model, storage, color, deviceType, imageUrl, prices } = req.body;
+    const { id, brand, model, storage, color, colors, deviceType, imageUrl, prices } = req.body;
 
     if (!brand || !model || !storage || !deviceType) {
       return res.status(400).json({ error: 'Missing required fields: brand, model, storage, deviceType' });
@@ -1679,14 +1683,30 @@ app.post('/api/products/admin', async (req, res) => {
       });
     }
     
-    // Generate SEO-friendly slug
-    const slug = generateProductSlug(brand, model, storage, color);
+    // Handle colors field: support both old single color and new colors array/comma-separated
+    let colorsArray = [];
+    if (colors) {
+      // If colors is a string (comma-separated), parse it
+      if (typeof colors === 'string') {
+        colorsArray = colors.split(',').map(c => c.trim()).filter(c => c && c !== '');
+      } else if (Array.isArray(colors)) {
+        colorsArray = colors.map(c => typeof c === 'string' ? c.trim() : c).filter(c => c && c !== '');
+      }
+    } else if (color) {
+      // Backward compatibility: if only color is provided, use it as single color
+      colorsArray = [color.trim()];
+    }
+    
+    // Generate SEO-friendly slug (use first color for slug, or null if no colors)
+    const firstColor = colorsArray.length > 0 ? colorsArray[0] : null;
+    const slug = generateProductSlug(brand, model, storage, firstColor);
     
     const productData = {
       brand: brand.trim(),
       model: model.trim(),
       storage: storage.trim(),
-      color: color ? color.trim() : null,
+      colors: colorsArray.length > 0 ? colorsArray : null, // Store as array
+      color: firstColor, // Keep for backward compatibility
       deviceType: deviceType.toLowerCase(),
       imageUrl: imageUrl || null,
       prices: prices || {}, // { Excellent: 500, Good: 400, Fair: 300, Faulty: null }
@@ -1778,7 +1798,7 @@ app.put('/api/products/admin/:id', async (req, res) => {
     }
 
     const { id } = req.params;
-    const { brand, model, storage, color, deviceType, imageUrl, prices } = req.body;
+    const { brand, model, storage, color, colors, deviceType, imageUrl, prices } = req.body;
     const staffIdentifier = req.headers['x-staff-identifier'] || req.body.staffIdentifier || 'Unknown';
 
     // Check permission
@@ -1798,14 +1818,30 @@ app.put('/api/products/admin/:id', async (req, res) => {
       return res.status(404).json({ error: 'Product not found' });
     }
 
-    // Generate SEO-friendly slug
-    const slug = generateProductSlug(brand, model, storage, color);
+    // Handle colors field: support both old single color and new colors array/comma-separated
+    let colorsArray = [];
+    if (colors) {
+      // If colors is a string (comma-separated), parse it
+      if (typeof colors === 'string') {
+        colorsArray = colors.split(',').map(c => c.trim()).filter(c => c && c !== '');
+      } else if (Array.isArray(colors)) {
+        colorsArray = colors.map(c => typeof c === 'string' ? c.trim() : c).filter(c => c && c !== '');
+      }
+    } else if (color) {
+      // Backward compatibility: if only color is provided, use it as single color
+      colorsArray = [color.trim()];
+    }
+    
+    // Generate SEO-friendly slug (use first color for slug, or null if no colors)
+    const firstColor = colorsArray.length > 0 ? colorsArray[0] : null;
+    const slug = generateProductSlug(brand, model, storage, firstColor);
     
     const productData = {
       brand: brand.trim(),
       model: model.trim(),
       storage: storage.trim(),
-      color: color ? color.trim() : null,
+      colors: colorsArray.length > 0 ? colorsArray : null, // Store as array
+      color: firstColor, // Keep for backward compatibility
       deviceType: deviceType.toLowerCase(),
       imageUrl: imageUrl || null,
       prices: prices || {},
@@ -1829,6 +1865,9 @@ app.put('/api/products/admin/:id', async (req, res) => {
       if (oldProduct.brand !== productData.brand) changes.push({ field: 'brand', old: oldProduct.brand, new: productData.brand });
       if (oldProduct.model !== productData.model) changes.push({ field: 'model', old: oldProduct.model, new: productData.model });
       if (oldProduct.storage !== productData.storage) changes.push({ field: 'storage', old: oldProduct.storage, new: productData.storage });
+      const oldColors = oldProduct.colors ? (Array.isArray(oldProduct.colors) ? oldProduct.colors.join(', ') : oldProduct.colors) : (oldProduct.color || '');
+      const newColors = productData.colors ? (Array.isArray(productData.colors) ? productData.colors.join(', ') : productData.colors) : (productData.color || '');
+      if (oldColors !== newColors) changes.push({ field: 'colors', old: oldColors || 'null', new: newColors || 'null' });
       if (oldProduct.deviceType !== productData.deviceType) changes.push({ field: 'deviceType', old: oldProduct.deviceType, new: productData.deviceType });
       if (oldProduct.imageUrl !== productData.imageUrl) changes.push({ field: 'imageUrl', old: oldProduct.imageUrl || 'null', new: productData.imageUrl || 'null' });
       
