@@ -3591,6 +3591,18 @@ app.get('/api/admin/dashboard', async (req, res) => {
       createdAt: { $gte: sevenDaysAgo }
     });
 
+    // Get store credit (gift card) statistics
+    const storeCreditSubmissions = await db.collection('submissions').find({
+      ...allSubmissionsQuery,
+      giftCardCode: { $exists: true, $ne: null }
+    }).toArray();
+    
+    const totalStoreCreditsIssued = storeCreditSubmissions.length;
+    const totalStoreCreditValue = storeCreditSubmissions.reduce((sum, sub) => {
+      const price = parseFloat(sub.finalPrice) || 0;
+      return sum + price;
+    }, 0);
+
     res.json({
       success: true,
       stats: {
@@ -3613,6 +3625,10 @@ app.get('/api/admin/dashboard', async (req, res) => {
         payments: {
           totalSpent: totalMoneySpent,
           totalPending: totalMoneyPending
+        },
+        storeCredits: {
+          totalIssued: totalStoreCreditsIssued,
+          totalValue: totalStoreCreditValue
         }
       }
     });
