@@ -16,27 +16,29 @@ app.use((req, res, next) => {
   // Get origin from request
   const origin = req.headers.origin;
   
-  // Set CORS headers - allow all origins
-  // Note: Cannot use '*' with credentials, so we allow the requesting origin
-  if (origin) {
-    res.header('Access-Control-Allow-Origin', origin);
-  } else {
-    res.header('Access-Control-Allow-Origin', '*');
-  }
-  
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, X-API-Key, X-Staff-Identifier, Authorization, Accept');
-  res.header('Access-Control-Max-Age', '86400'); // 24 hours
-  res.header('Access-Control-Expose-Headers', 'Content-Length, Content-Type');
-  
-  // Only set credentials if we have a specific origin (not '*')
-  if (origin) {
-    res.header('Access-Control-Allow-Credentials', 'true');
-  }
-  
-  // Handle preflight OPTIONS requests immediately
+  // Log for debugging (remove in production if needed)
   if (req.method === 'OPTIONS') {
-    return res.status(200).send('');
+    console.log('🔍 OPTIONS preflight request from origin:', origin);
+  }
+  
+  // Set CORS headers - allow all origins
+  // For Vercel, we need to explicitly set the origin
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  } else {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
+  
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-API-Key, X-Staff-Identifier, Authorization, Accept');
+  res.setHeader('Access-Control-Max-Age', '86400'); // 24 hours
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Type');
+  
+  // Handle preflight OPTIONS requests immediately - MUST return 200 with headers
+  if (req.method === 'OPTIONS') {
+    console.log('✅ Sending OPTIONS response with CORS headers');
+    return res.status(200).end();
   }
   
   next();
