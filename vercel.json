@@ -4,20 +4,6 @@
       "path": "/api/backup/auto",
       "schedule": "0 * * * *"
     }
-  ],
-  "rewrites": [
-    {
-      "source": "/pages/sell-your-device/:device/:brand/:product",
-      "destination": "/pages/sell-your-device?device=:device&brand=:brand&product=:product"
-    },
-    {
-      "source": "/pages/sell-your-device/:device/:brand",
-      "destination": "/pages/sell-your-device?device=:device&brand=:brand"
-    },
-    {
-      "source": "/pages/sell-your-device/:device",
-      "destination": "/pages/sell-your-device?device=:device"
-    }
   ]
 }
 
