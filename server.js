@@ -13,16 +13,30 @@ let lastBackupCheck = null;
 
 // Enable CORS for Shopify store - MUST BE BEFORE OTHER MIDDLEWARE
 app.use((req, res, next) => {
-  // Set CORS headers
-  res.header('Access-Control-Allow-Origin', '*'); // Allow all origins
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, X-API-Key, X-Staff-Identifier, Authorization');
-  res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Max-Age', '86400'); // 24 hours
+  // Get origin from request
+  const origin = req.headers.origin;
   
-  // Handle preflight requests
+  // Set CORS headers - allow all origins
+  // Note: Cannot use '*' with credentials, so we allow the requesting origin
+  if (origin) {
+    res.header('Access-Control-Allow-Origin', origin);
+  } else {
+    res.header('Access-Control-Allow-Origin', '*');
+  }
+  
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, X-API-Key, X-Staff-Identifier, Authorization, Accept');
+  res.header('Access-Control-Max-Age', '86400'); // 24 hours
+  res.header('Access-Control-Expose-Headers', 'Content-Length, Content-Type');
+  
+  // Only set credentials if we have a specific origin (not '*')
+  if (origin) {
+    res.header('Access-Control-Allow-Credentials', 'true');
+  }
+  
+  // Handle preflight OPTIONS requests immediately
   if (req.method === 'OPTIONS') {
-    return res.status(200).end();
+    return res.status(200).send('');
   }
   
   next();
