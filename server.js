@@ -12,17 +12,12 @@ let backupScheduler = null;
 let lastBackupCheck = null;
 
 // Enable CORS for Shopify store - MUST BE BEFORE OTHER MIDDLEWARE
+// This middleware handles CORS for all routes
 app.use((req, res, next) => {
   // Get origin from request
   const origin = req.headers.origin;
   
-  // Log for debugging (remove in production if needed)
-  if (req.method === 'OPTIONS') {
-    console.log('🔍 OPTIONS preflight request from origin:', origin);
-  }
-  
-  // Set CORS headers - allow all origins
-  // For Vercel, we need to explicitly set the origin
+  // Set CORS headers for all responses
   if (origin) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Credentials', 'true');
@@ -35,13 +30,28 @@ app.use((req, res, next) => {
   res.setHeader('Access-Control-Max-Age', '86400'); // 24 hours
   res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Type');
   
-  // Handle preflight OPTIONS requests immediately - MUST return 200 with headers
+  // Handle preflight OPTIONS requests - MUST return before other middleware
   if (req.method === 'OPTIONS') {
-    console.log('✅ Sending OPTIONS response with CORS headers');
-    return res.status(200).end();
+    console.log('✅ OPTIONS preflight request - sending CORS headers');
+    return res.status(200).json({});
   }
   
   next();
+});
+
+// Also add a catch-all OPTIONS handler at the root level (for Vercel)
+app.options('*', (req, res) => {
+  const origin = req.headers.origin;
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  } else {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-API-Key, X-Staff-Identifier, Authorization, Accept');
+  res.setHeader('Access-Control-Max-Age', '86400');
+  return res.status(200).json({});
 });
 
 app.use(express.json());
