@@ -33,7 +33,7 @@ app.use((req, res, next) => {
   // Handle preflight OPTIONS requests - MUST return before other middleware
   if (req.method === 'OPTIONS') {
     console.log('✅ OPTIONS preflight request - sending CORS headers');
-    return res.status(200).json({});
+    return res.status(200).send('');
   }
   
   next();
@@ -51,7 +51,7 @@ app.options('*', (req, res) => {
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-API-Key, X-Staff-Identifier, Authorization, Accept');
   res.setHeader('Access-Control-Max-Age', '86400');
-  return res.status(200).json({});
+  return res.status(200).send('');
 });
 
 app.use(express.json());
