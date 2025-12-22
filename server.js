@@ -6,6 +6,8 @@ const { MongoClient, ObjectId } = require('mongodb');
 const fs = require('fs').promises;
 const path = require('path');
 const XLSX = require('xlsx');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
 const app = express();
 
 // Backup scheduler
@@ -120,6 +122,20 @@ async function initMongoDB() {
       await db.collection('submissions').createIndex({ id: 1 }, { unique: true });
       await db.collection('submissions').createIndex({ status: 1 });
       await db.collection('submissions').createIndex({ createdAt: -1 });
+      await db.collection('submissions').createIndex({ customerId: 1 });
+      
+      // Customer collection indexes
+      await db.collection('customers').createIndex({ email: 1 }, { unique: true });
+      await db.collection('customers').createIndex({ createdAt: -1 });
+      
+      // Session collection indexes
+      await db.collection('sessions').createIndex({ sessionId: 1 }, { unique: true });
+      await db.collection('sessions').createIndex({ customerId: 1 });
+      await db.collection('sessions').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+      
+      // Password reset tokens
+      await db.collection('password_reset_tokens').createIndex({ token: 1 }, { unique: true });
+      await db.collection('password_reset_tokens').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
     } catch (indexError) {
       // Indexes might already exist, that's okay
       console.log('Index creation skipped (may already exist)');
@@ -3336,6 +3352,596 @@ app.get('/api/products/export-excel', async (req, res) => {
   } catch (error) {
     console.error('Error exporting Excel:', error);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ============================================
+// AUTHENTICATION MIDDLEWARE
+// ============================================
+
+// Middleware to verify JWT token
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+  
+  if (!token) {
+    return res.status(401).json({ error: 'Access token required' });
+  }
+  
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({ error: 'Invalid or expired token' });
+    }
+    req.user = user;
+    next();
+  });
+}
+
+// Helper function to generate session ID
+function generateSessionId() {
+  return require('crypto').randomBytes(32).toString('hex');
+}
+
+// Helper function to create JWT token
+function createToken(customerId, email) {
+  return jwt.sign(
+    { customerId, email },
+    JWT_SECRET,
+    { expiresIn: '30d' } // Token expires in 30 days
+  );
+}
+
+// ============================================
+// AUTHENTICATION ENDPOINTS
+// ============================================
+
+// Register new customer
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const { firstName, lastName, email, password, phone, postcode } = req.body;
+    
+    if (!firstName || !lastName || !email || !password) {
+      return res.status(400).json({ 
+        error: 'First name, last name, email, and password are required' 
+      });
+    }
+    
+    if (password.length < 6) {
+      return res.status(400).json({ 
+        error: 'Password must be at least 6 characters long' 
+      });
+    }
+    
+    await ensureMongoConnection();
+    
+    if (!db) {
+      return res.status(500).json({ error: 'Database connection failed' });
+    }
+    
+    // Check if customer already exists
+    const existingCustomer = await db.collection('customers').findOne({ email: email.toLowerCase().trim() });
+    if (existingCustomer) {
+      return res.status(409).json({ 
+        error: 'An account with this email already exists' 
+      });
+    }
+    
+    // Hash password
+    const saltRounds = 10;
+    const passwordHash = await bcrypt.hash(password, saltRounds);
+    
+    // Create customer
+    const customer = {
+      firstName: firstName.trim(),
+      lastName: lastName.trim(),
+      email: email.toLowerCase().trim(),
+      passwordHash,
+      phone: phone || '',
+      postcode: postcode || '',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      emailVerified: false,
+      isActive: true
+    };
+    
+    const result = await db.collection('customers').insertOne(customer);
+    const customerId = result.insertedId.toString();
+    
+    // Create session
+    const sessionId = generateSessionId();
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 30); // 30 days
+    
+    await db.collection('sessions').insertOne({
+      sessionId,
+      customerId,
+      email: customer.email,
+      createdAt: new Date().toISOString(),
+      expiresAt: expiresAt.toISOString()
+    });
+    
+    // Generate JWT token
+    const token = createToken(customerId, customer.email);
+    
+    // Return customer data (without password)
+    res.json({
+      success: true,
+      token,
+      sessionId,
+      customer: {
+        id: customerId,
+        firstName: customer.firstName,
+        lastName: customer.lastName,
+        email: customer.email,
+        phone: customer.phone,
+        postcode: customer.postcode
+      }
+    });
+    
+  } catch (error) {
+    console.error('Registration error:', error);
+    res.status(500).json({ error: 'Registration failed. Please try again.' });
+  }
+});
+
+// Login customer
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    
+    if (!email || !password) {
+      return res.status(400).json({ 
+        error: 'Email and password are required' 
+      });
+    }
+    
+    await ensureMongoConnection();
+    
+    if (!db) {
+      return res.status(500).json({ error: 'Database connection failed' });
+    }
+    
+    // Find customer by email
+    const customer = await db.collection('customers').findOne({ 
+      email: email.toLowerCase().trim() 
+    });
+    
+    if (!customer) {
+      return res.status(401).json({ 
+        error: 'Invalid email or password' 
+      });
+    }
+    
+    // Check if account is active
+    if (customer.isActive === false) {
+      return res.status(403).json({ 
+        error: 'Account is deactivated. Please contact support.' 
+      });
+    }
+    
+    // Verify password
+    const passwordMatch = await bcrypt.compare(password, customer.passwordHash);
+    if (!passwordMatch) {
+      return res.status(401).json({ 
+        error: 'Invalid email or password' 
+      });
+    }
+    
+    // Create session
+    const sessionId = generateSessionId();
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 30); // 30 days
+    
+    await db.collection('sessions').insertOne({
+      sessionId,
+      customerId: customer._id.toString(),
+      email: customer.email,
+      createdAt: new Date().toISOString(),
+      expiresAt: expiresAt.toISOString()
+    });
+    
+    // Generate JWT token
+    const token = createToken(customer._id.toString(), customer.email);
+    
+    // Return customer data (without password)
+    res.json({
+      success: true,
+      token,
+      sessionId,
+      customer: {
+        id: customer._id.toString(),
+        firstName: customer.firstName,
+        lastName: customer.lastName,
+        email: customer.email,
+        phone: customer.phone,
+        postcode: customer.postcode
+      }
+    });
+    
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ error: 'Login failed. Please try again.' });
+  }
+});
+
+// Get current user (requires authentication)
+app.get('/api/auth/me', authenticateToken, async (req, res) => {
+  try {
+    await ensureMongoConnection();
+    
+    if (!db) {
+      return res.status(500).json({ error: 'Database connection failed' });
+    }
+    
+    const customer = await db.collection('customers').findOne({ 
+      _id: new ObjectId(req.user.customerId) 
+    });
+    
+    if (!customer) {
+      return res.status(404).json({ error: 'Customer not found' });
+    }
+    
+    // Return customer data (without password)
+    res.json({
+      success: true,
+      customer: {
+        id: customer._id.toString(),
+        firstName: customer.firstName,
+        lastName: customer.lastName,
+        email: customer.email,
+        phone: customer.phone,
+        postcode: customer.postcode,
+        createdAt: customer.createdAt
+      }
+    });
+    
+  } catch (error) {
+    console.error('Get user error:', error);
+    res.status(500).json({ error: 'Failed to fetch user data' });
+  }
+});
+
+// Logout customer
+app.post('/api/auth/logout', authenticateToken, async (req, res) => {
+  try {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    
+    // Invalidate session (optional - you can also just rely on token expiration)
+    // For now, we'll just return success
+    // In production, you might want to maintain a blacklist of tokens
+    
+    res.json({
+      success: true,
+      message: 'Logged out successfully'
+    });
+    
+  } catch (error) {
+    console.error('Logout error:', error);
+    res.status(500).json({ error: 'Logout failed' });
+  }
+});
+
+// Forgot password - send reset email
+app.post('/api/auth/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+    
+    await ensureMongoConnection();
+    
+    if (!db) {
+      return res.status(500).json({ error: 'Database connection failed' });
+    }
+    
+    const customer = await db.collection('customers').findOne({ 
+      email: email.toLowerCase().trim() 
+    });
+    
+    // Don't reveal if email exists or not (security best practice)
+    // Always return success message
+    if (customer) {
+      // Generate reset token
+      const resetToken = require('crypto').randomBytes(32).toString('hex');
+      const expiresAt = new Date();
+      expiresAt.setHours(expiresAt.getHours() + 1); // Token expires in 1 hour
+      
+      await db.collection('password_reset_tokens').insertOne({
+        token: resetToken,
+        customerId: customer._id.toString(),
+        email: customer.email,
+        createdAt: new Date().toISOString(),
+        expiresAt: expiresAt.toISOString(),
+        used: false
+      });
+      
+      // Send reset email
+      const resetUrl = `${req.headers.origin || 'https://tech-corner-9576.myshopify.com'}/account/reset-password?token=${resetToken}`;
+      
+      try {
+        await transporter.sendMail({
+          from: SMTP_FROM,
+          to: customer.email,
+          subject: 'Password Reset Request',
+          html: `
+            <h2>Password Reset Request</h2>
+            <p>You requested to reset your password. Click the link below to reset it:</p>
+            <p><a href="${resetUrl}" style="background: #10b981; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; display: inline-block;">Reset Password</a></p>
+            <p>This link will expire in 1 hour.</p>
+            <p>If you didn't request this, please ignore this email.</p>
+          `
+        });
+      } catch (emailError) {
+        console.error('Email send error:', emailError);
+        // Still return success to not reveal if email exists
+      }
+    }
+    
+    res.json({
+      success: true,
+      message: 'If an account exists with this email, a password reset link has been sent.'
+    });
+    
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    res.status(500).json({ error: 'Failed to process request' });
+  }
+});
+
+// Reset password
+app.post('/api/auth/reset-password', async (req, res) => {
+  try {
+    const { token, password } = req.body;
+    
+    if (!token || !password) {
+      return res.status(400).json({ 
+        error: 'Token and password are required' 
+      });
+    }
+    
+    if (password.length < 6) {
+      return res.status(400).json({ 
+        error: 'Password must be at least 6 characters long' 
+      });
+    }
+    
+    await ensureMongoConnection();
+    
+    if (!db) {
+      return res.status(500).json({ error: 'Database connection failed' });
+    }
+    
+    // Find reset token
+    const resetToken = await db.collection('password_reset_tokens').findOne({
+      token: token,
+      used: false,
+      expiresAt: { $gt: new Date().toISOString() }
+    });
+    
+    if (!resetToken) {
+      return res.status(400).json({ 
+        error: 'Invalid or expired reset token' 
+      });
+    }
+    
+    // Hash new password
+    const saltRounds = 10;
+    const passwordHash = await bcrypt.hash(password, saltRounds);
+    
+    // Update customer password
+    await db.collection('customers').updateOne(
+      { _id: new ObjectId(resetToken.customerId) },
+      { 
+        $set: { 
+          passwordHash,
+          updatedAt: new Date().toISOString()
+        }
+      }
+    );
+    
+    // Mark token as used
+    await db.collection('password_reset_tokens').updateOne(
+      { token: token },
+      { $set: { used: true } }
+    );
+    
+    res.json({
+      success: true,
+      message: 'Password reset successfully'
+    });
+    
+  } catch (error) {
+    console.error('Reset password error:', error);
+    res.status(500).json({ error: 'Failed to reset password' });
+  }
+});
+
+// ============================================
+// CUSTOMER ACCOUNT ENDPOINTS
+// ============================================
+
+// Get customer's trade-in submissions
+app.get('/api/customer/trade-ins', authenticateToken, async (req, res) => {
+  try {
+    await ensureMongoConnection();
+    
+    if (!db) {
+      return res.status(500).json({ error: 'Database connection failed' });
+    }
+    
+    const customerId = req.user.customerId;
+    
+    // Get submissions from MongoDB
+    const submissions = await db.collection('submissions')
+      .find({ customerId: customerId })
+      .sort({ createdAt: -1 })
+      .toArray();
+    
+    res.json({
+      success: true,
+      submissions: submissions,
+      count: submissions.length
+    });
+    
+  } catch (error) {
+    console.error('Error fetching customer trade-ins:', error);
+    res.status(500).json({ error: 'Failed to fetch trade-ins' });
+  }
+});
+
+// Get single trade-in submission (customer's own)
+app.get('/api/customer/trade-ins/:id', authenticateToken, async (req, res) => {
+  try {
+    await ensureMongoConnection();
+    
+    if (!db) {
+      return res.status(500).json({ error: 'Database connection failed' });
+    }
+    
+    const customerId = req.user.customerId;
+    const submissionId = parseInt(req.params.id);
+    
+    // Get submission from MongoDB
+    const submission = await db.collection('submissions').findOne({
+      id: submissionId,
+      customerId: customerId
+    });
+    
+    if (!submission) {
+      return res.status(404).json({ error: 'Trade-in submission not found' });
+    }
+    
+    res.json({
+      success: true,
+      submission: submission
+    });
+    
+  } catch (error) {
+    console.error('Error fetching trade-in:', error);
+    res.status(500).json({ error: 'Failed to fetch trade-in' });
+  }
+});
+
+// Update customer profile
+app.put('/api/customer/profile', authenticateToken, async (req, res) => {
+  try {
+    const { firstName, lastName, phone, postcode } = req.body;
+    const customerId = req.user.customerId;
+    
+    await ensureMongoConnection();
+    
+    if (!db) {
+      return res.status(500).json({ error: 'Database connection failed' });
+    }
+    
+    const updateData = {
+      updatedAt: new Date().toISOString()
+    };
+    
+    if (firstName) updateData.firstName = firstName.trim();
+    if (lastName) updateData.lastName = lastName.trim();
+    if (phone !== undefined) updateData.phone = phone || '';
+    if (postcode !== undefined) updateData.postcode = postcode || '';
+    
+    const result = await db.collection('customers').updateOne(
+      { _id: new ObjectId(customerId) },
+      { $set: updateData }
+    );
+    
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ error: 'Customer not found' });
+    }
+    
+    // Get updated customer
+    const customer = await db.collection('customers').findOne({ 
+      _id: new ObjectId(customerId) 
+    });
+    
+    res.json({
+      success: true,
+      customer: {
+        id: customer._id.toString(),
+        firstName: customer.firstName,
+        lastName: customer.lastName,
+        email: customer.email,
+        phone: customer.phone,
+        postcode: customer.postcode
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error updating profile:', error);
+    res.status(500).json({ error: 'Failed to update profile' });
+  }
+});
+
+// Change password
+app.put('/api/customer/change-password', authenticateToken, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    const customerId = req.user.customerId;
+    
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ 
+        error: 'Current password and new password are required' 
+      });
+    }
+    
+    if (newPassword.length < 6) {
+      return res.status(400).json({ 
+        error: 'New password must be at least 6 characters long' 
+      });
+    }
+    
+    await ensureMongoConnection();
+    
+    if (!db) {
+      return res.status(500).json({ error: 'Database connection failed' });
+    }
+    
+    // Get customer
+    const customer = await db.collection('customers').findOne({ 
+      _id: new ObjectId(customerId) 
+    });
+    
+    if (!customer) {
+      return res.status(404).json({ error: 'Customer not found' });
+    }
+    
+    // Verify current password
+    const passwordMatch = await bcrypt.compare(currentPassword, customer.passwordHash);
+    if (!passwordMatch) {
+      return res.status(401).json({ 
+        error: 'Current password is incorrect' 
+      });
+    }
+    
+    // Hash new password
+    const saltRounds = 10;
+    const passwordHash = await bcrypt.hash(newPassword, saltRounds);
+    
+    // Update password
+    await db.collection('customers').updateOne(
+      { _id: new ObjectId(customerId) },
+      { 
+        $set: { 
+          passwordHash,
+          updatedAt: new Date().toISOString()
+        }
+      }
+    );
+    
+    res.json({
+      success: true,
+      message: 'Password changed successfully'
+    });
+    
+  } catch (error) {
+    console.error('Error changing password:', error);
+    res.status(500).json({ error: 'Failed to change password' });
   }
 });
 
