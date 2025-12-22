@@ -33,6 +33,7 @@ app.use(express.json());
 const SHOPIFY_SHOP = process.env.SHOPIFY_SHOP;
 const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
 const API_SECRET = process.env.API_SECRET;
+const JWT_SECRET = process.env.JWT_SECRET || API_SECRET || 'your-secret-key-change-in-production';
 
 // Email configuration (SMTP)
 const SMTP_HOST = process.env.SMTP_HOST || 'smtp.gmail.com';
