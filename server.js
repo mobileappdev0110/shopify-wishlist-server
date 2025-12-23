@@ -4251,35 +4251,55 @@ app.post('/api/trade-in/submit', async (req, res) => {
       pageUrl,
       isCustomDevice,
       paymentMethod,
-      paymentDetails
+      paymentDetails,
+      items, // New: array of items for batch submission
+      confirmations // New: confirmations from checkboxes
     } = req.body;
 
-    if (!name || !email || !brand || !model || !condition) {
-      return res.status(400).json({ 
-        error: 'Missing required fields' 
-      });
+    // Check if this is a batch submission (items array) or single item
+    const isBatchSubmission = items && Array.isArray(items) && items.length > 0;
+
+    if (isBatchSubmission) {
+      // Batch submission: validate items array
+      if (!name || !email) {
+        return res.status(400).json({ 
+          error: 'Missing required fields: name, email' 
+        });
+      }
+
+      // Validate each item in the array
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (!item.brand || !item.model || !item.condition) {
+          return res.status(400).json({ 
+            error: `Missing required fields in item ${i + 1}: brand, model, condition` 
+          });
+        }
+      }
+    } else {
+      // Single item submission: validate required fields
+      if (!name || !email || !brand || !model || !condition) {
+        return res.status(400).json({ 
+          error: 'Missing required fields' 
+        });
+      }
     }
 
     // Validate payment details based on payment method
-    if (paymentMethod === 'bank_transfer') {
+    const selectedPaymentMethod = paymentMethod || 'store_credit';
+    if (selectedPaymentMethod === 'bank_transfer') {
       if (!paymentDetails?.firstName || !paymentDetails?.lastName || !paymentDetails?.sortCode || !paymentDetails?.accountNumber) {
         return res.status(400).json({ 
           error: 'Bank account details are required for bank transfer' 
         });
       }
-    } else if (paymentMethod === 'paypal') {
+    } else if (selectedPaymentMethod === 'paypal') {
       if (!paymentDetails?.paypalEmail) {
         return res.status(400).json({ 
           error: 'PayPal email is required for PayPal payment' 
         });
       }
     }
-
-    // For custom devices, finalPrice can be 0
-    const price = isCustomDevice ? 0 : (finalPrice || 0);
-    
-    // Default to store_credit if not specified
-    const selectedPaymentMethod = paymentMethod || 'store_credit';
 
     // Get customer ID from token if authenticated (optional - guest submissions allowed)
     let customerId = null;
@@ -4305,34 +4325,92 @@ app.post('/api/trade-in/submit', async (req, res) => {
     }
 
     // Create submission
-    const submission = {
-      id: submissionIdCounter++,
-      customerId: customerId || null, // Link to customer if logged in
-      shopifyCustomerId: shopifyCustomerId || null, // Link to Shopify customer if available
-      name,
-      email,
-      phone: phone || '',
-      postcode: postcode || '',
-      notes: notes || '',
-      brand,
-      model,
-      storage: storage || 'Unknown',
-      condition,
-      finalPrice: parseFloat(price),
-      deviceType: deviceType || 'phone',
-      isCustomDevice: isCustomDevice || false,
-      paymentMethod: selectedPaymentMethod,
-      paymentDetails: paymentDetails || {},
-      pageUrl: pageUrl || '',
-      status: 'pending', // pending, accepted, rejected, completed
-      paymentStatus: 'pending', // pending, processing, completed, failed
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      giftCardCode: null,
-      giftCardId: null,
-      paymentReference: null,
-      paymentDate: null
-    };
+    let submission;
+    
+    if (isBatchSubmission) {
+      // Batch submission: create one submission with items array
+      const totalPrice = items.reduce((sum, item) => {
+        return sum + (parseFloat(item.price || 0) * (item.quantity || 1));
+      }, 0);
+
+      // Prepare items array with all details
+      const submissionItems = items.map(item => ({
+        brand: item.brand,
+        model: item.model,
+        storage: item.storage || 'Unknown',
+        color: item.color || null,
+        condition: item.condition,
+        price: parseFloat(item.price || 0),
+        quantity: item.quantity || 1,
+        deviceType: item.deviceType || 'phone',
+        productId: item.productId || null,
+        productGid: item.productGid || null,
+        variantId: item.variantId || null,
+        variantGid: item.variantGid || null,
+        productTitle: item.productTitle || null,
+        imageUrl: item.imageUrl || null,
+        returnPack: item.returnPack !== false
+      }));
+
+      submission = {
+        id: submissionIdCounter++,
+        customerId: customerId || null,
+        shopifyCustomerId: shopifyCustomerId || null,
+        name,
+        email,
+        phone: phone || '',
+        postcode: postcode || '',
+        notes: notes || '',
+        items: submissionItems, // Array of items
+        itemCount: items.length,
+        finalPrice: totalPrice,
+        paymentMethod: selectedPaymentMethod,
+        paymentDetails: paymentDetails || {},
+        confirmations: confirmations || {},
+        pageUrl: pageUrl || '',
+        status: 'pending',
+        paymentStatus: 'pending',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        giftCardCode: null,
+        giftCardId: null,
+        paymentReference: null,
+        paymentDate: null
+      };
+    } else {
+      // Single item submission (backward compatibility)
+      const price = isCustomDevice ? 0 : (finalPrice || 0);
+      
+      submission = {
+        id: submissionIdCounter++,
+        customerId: customerId || null,
+        shopifyCustomerId: shopifyCustomerId || null,
+        name,
+        email,
+        phone: phone || '',
+        postcode: postcode || '',
+        notes: notes || '',
+        brand,
+        model,
+        storage: storage || 'Unknown',
+        condition,
+        finalPrice: parseFloat(price),
+        deviceType: deviceType || 'phone',
+        isCustomDevice: isCustomDevice || false,
+        paymentMethod: selectedPaymentMethod,
+        paymentDetails: paymentDetails || {},
+        confirmations: confirmations || {},
+        pageUrl: pageUrl || '',
+        status: 'pending',
+        paymentStatus: 'pending',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        giftCardCode: null,
+        giftCardId: null,
+        paymentReference: null,
+        paymentDate: null
+      };
+    }
 
     tradeInSubmissions.push(submission);
     
@@ -4360,22 +4438,43 @@ app.post('/api/trade-in/submit', async (req, res) => {
 
     // Send confirmation email to customer
     try {
+      let emailHtml = `
+        <h2>Thank you for your trade-in request!</h2>
+        <p>Hello ${name},</p>
+        <p>We've received your trade-in request:</p>
+      `;
+
+      if (isBatchSubmission) {
+        emailHtml += `<p><strong>Items (${submission.itemCount}):</strong></p><ul>`;
+        submission.items.forEach((item, index) => {
+          emailHtml += `
+            <li>
+              <strong>Item ${index + 1}:</strong> ${item.brand} ${item.model} ${item.storage} 
+              (${item.condition}) × ${item.quantity} - £${(item.price * item.quantity).toFixed(2)}
+            </li>
+          `;
+        });
+        emailHtml += `</ul><p><strong>Total Estimated Value:</strong> £${submission.finalPrice.toFixed(2)}</p>`;
+      } else {
+        emailHtml += `
+          <ul>
+            <li><strong>Device:</strong> ${submission.brand} ${submission.model} ${submission.storage}</li>
+            <li><strong>Condition:</strong> ${submission.condition}</li>
+            <li><strong>Estimated Value:</strong> £${submission.finalPrice.toFixed(2)}</li>
+          </ul>
+        `;
+      }
+
+      emailHtml += `
+        <p>Our team will review your request and get back to you shortly.</p>
+        <p>Submission ID: #${submission.id}</p>
+      `;
+
       await transporter.sendMail({
         from: SMTP_FROM,
         to: email,
         subject: 'Trade-In Request Received',
-        html: `
-          <h2>Thank you for your trade-in request!</h2>
-          <p>Hello ${name},</p>
-          <p>We've received your trade-in request for:</p>
-          <ul>
-            <li><strong>Device:</strong> ${brand} ${model} ${storage}</li>
-            <li><strong>Condition:</strong> ${condition}</li>
-            <li><strong>Estimated Value:</strong> £${parseFloat(finalPrice).toFixed(2)}</li>
-          </ul>
-          <p>Our team will review your request and get back to you shortly.</p>
-          <p>Submission ID: #${submission.id}</p>
-        `
+        html: emailHtml
       });
     } catch (emailError) {
       console.error('Error sending confirmation email:', emailError);
@@ -4384,20 +4483,41 @@ app.post('/api/trade-in/submit', async (req, res) => {
 
     // Send notification email to admin
     try {
+      let adminHtml = `
+        <h2>New Trade-In Request</h2>
+        <p><strong>Customer:</strong> ${name} (${email})</p>
+        <p><strong>Phone:</strong> ${phone || 'N/A'}</p>
+      `;
+
+      if (isBatchSubmission) {
+        adminHtml += `<p><strong>Items (${submission.itemCount}):</strong></p><ul>`;
+        submission.items.forEach((item, index) => {
+          adminHtml += `
+            <li>
+              <strong>Item ${index + 1}:</strong> ${item.brand} ${item.model} ${item.storage} 
+              (${item.condition}) × ${item.quantity} - £${(item.price * item.quantity).toFixed(2)}
+            </li>
+          `;
+        });
+        adminHtml += `</ul><p><strong>Total Estimated Value:</strong> £${submission.finalPrice.toFixed(2)}</p>`;
+      } else {
+        adminHtml += `
+          <p><strong>Device:</strong> ${submission.brand} ${submission.model} ${submission.storage}</p>
+          <p><strong>Condition:</strong> ${submission.condition}</p>
+          <p><strong>Estimated Value:</strong> £${submission.finalPrice.toFixed(2)}</p>
+        `;
+      }
+
+      adminHtml += `
+        <p><strong>Notes:</strong> ${notes || 'None'}</p>
+        <p><strong>Submission ID:</strong> #${submission.id}</p>
+      `;
+
       await transporter.sendMail({
         from: SMTP_FROM,
         to: ADMIN_EMAIL,
         subject: `New Trade-In Request #${submission.id}`,
-        html: `
-          <h2>New Trade-In Request</h2>
-          <p><strong>Customer:</strong> ${name} (${email})</p>
-          <p><strong>Phone:</strong> ${phone || 'N/A'}</p>
-          <p><strong>Device:</strong> ${brand} ${model} ${storage}</p>
-          <p><strong>Condition:</strong> ${condition}</p>
-          <p><strong>Estimated Value:</strong> £${parseFloat(finalPrice).toFixed(2)}</p>
-          <p><strong>Notes:</strong> ${notes || 'None'}</p>
-          <p><strong>Submission ID:</strong> #${submission.id}</p>
-        `
+        html: adminHtml
       });
     } catch (emailError) {
       console.error('Error sending admin notification email:', emailError);
