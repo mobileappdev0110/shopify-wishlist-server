@@ -3735,7 +3735,7 @@ function createToken(customerId, email) {
   return jwt.sign(
     { customerId, email },
     JWT_SECRET,
-    { expiresIn: '30d' } // Token expires in 30 days
+    { expiresIn: '30m' } // Token expires in 30 minutes
   );
 }
 
@@ -3958,7 +3958,7 @@ app.post('/api/auth/register', async (req, res) => {
     // Create session
     const sessionId = generateSessionId();
     const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 30); // 30 days
+    expiresAt.setMinutes(expiresAt.getMinutes() + 30); // 30 minutes
     
     await db.collection('sessions').insertOne({
       sessionId,
@@ -4063,7 +4063,7 @@ app.post('/api/auth/login', async (req, res) => {
     // Create session
     const sessionId = generateSessionId();
     const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 30); // 30 days
+    expiresAt.setMinutes(expiresAt.getMinutes() + 30); // 30 minutes
     
     await db.collection('sessions').insertOne({
       sessionId,
