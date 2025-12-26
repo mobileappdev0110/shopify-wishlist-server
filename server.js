@@ -7561,4 +7561,3 @@ if (require.main === module) {
   // For serverless (Vercel), initialize scheduler after a delay
   setTimeout(initializeBackupScheduler, 3000);
 }
-
